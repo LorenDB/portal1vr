@@ -712,7 +712,15 @@ public:
 
 	void SafeRelease() { if (BaseClass::m_pObject) BaseClass::m_pObject->Release(); BaseClass::m_pObject = 0; }
 	void AssignAddRef(T *pFrom) { SafeRelease(); if (pFrom) pFrom->AddRef(); BaseClass::m_pObject = pFrom; }
-	void AddRefAssignTo(T *&pTo) { ::SafeRelease(pTo); if (BaseClass::m_pObject) BaseClass::m_pObject->AddRef(); pTo = BaseClass::m_pObject; }
+	void AddRefAssignTo(T *&pTo)
+	{
+		if (pTo)
+			pTo->Release();
+		pTo = nullptr;
+		if (BaseClass::m_pObject)
+			BaseClass::m_pObject->AddRef();
+		pTo = BaseClass::m_pObject;
+	}
 };
 
 class IMaterial
@@ -855,8 +863,11 @@ public:
 	virtual int Release() = 0;
 };
 
-// Source SDK 2013 IMatRenderContext. Keep the overload declaration order
-// because MSVC reverses overloaded entries within each vtable group.
+// Source SDK 2013 IMatRenderContext. MSVC reverses overloaded entries within
+// each vtable group, so the engine order is 6-arg, 5-arg, 1-arg, 0-arg.
+// MinGW Clang keeps declaration order, so that build lists them reversed.
+// An MSVC build of this header must keep the SDK order and let the compiler
+// reverse the group.
 class IMatRenderContext : public IRefCounted
 {
 public:
@@ -963,10 +974,17 @@ public:
     virtual void GetWindowSize(int &, int &) = 0;
     virtual void Unused103() = 0;
     virtual void Unused104() = 0;
+#if defined(__clang__) && !defined(_MSC_VER)
+    virtual void PushRenderTargetAndViewport(ITexture *, ITexture *, int, int, int, int) = 0;
+    virtual void PushRenderTargetAndViewport(ITexture *, int, int, int, int) = 0;
+    virtual void PushRenderTargetAndViewport(ITexture *) = 0;
+    virtual void PushRenderTargetAndViewport() = 0;
+#else
     virtual void PushRenderTargetAndViewport() = 0;
     virtual void PushRenderTargetAndViewport(ITexture *) = 0;
     virtual void PushRenderTargetAndViewport(ITexture *, int, int, int, int) = 0;
     virtual void PushRenderTargetAndViewport(ITexture *, ITexture *, int, int, int, int) = 0;
+#endif
     virtual void PopRenderTargetAndViewport() = 0;
     virtual void Unused110() = 0;
     virtual void CopyRenderTargetToTextureEx(ITexture *, int, Rect_t *, Rect_t *) = 0;
@@ -1903,7 +1921,13 @@ typedef ButtonCode_t KeyCode;
 class IInput
 {
 public:
+#if defined(__clang__) && !defined(_MSC_VER)
+	// MinGW Clang puts a virtual destructor in two vtable slots. Portal's
+	// MSVC binary has one, which shifted every later IInput call by one.
+	virtual void MsvcDestructorSlot();
+#else
 	virtual ~IInput();
+#endif
 	virtual void SetMouseFocus(void);;
 	virtual void SetMouseCapture(void);
 	virtual void GetKeyCodeText(ButtonCode_t, char *, int);

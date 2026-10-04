@@ -31,6 +31,13 @@ namespace
     using CoCreateInstanceFn = HRESULT (WINAPI *)(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID *);
     using CoCreateInstanceExFn = HRESULT (WINAPI *)(REFCLSID, IUnknown *, DWORD, COSERVERINFO *, DWORD, MULTI_QI *);
 
+    // Clang does not implicitly convert a stdcall function pointer to void*.
+    template <typename Fn>
+    LPVOID HookPointer(Fn fn)
+    {
+        return reinterpret_cast<LPVOID>(fn);
+    }
+
     ExitProcessFn g_OriginalExitProcess = nullptr;
     TerminateProcessFn g_OriginalTerminateProcess = nullptr;
     bool g_ExitHooksInstalled = false;
@@ -218,8 +225,8 @@ namespace
             return;
         }
 
-        const MH_STATUS exitHookStatus = MH_CreateHookApi(L"kernel32", "ExitProcess", &HookedExitProcess, reinterpret_cast<LPVOID *>(&g_OriginalExitProcess));
-        const MH_STATUS terminateHookStatus = MH_CreateHookApi(L"kernel32", "TerminateProcess", &HookedTerminateProcess, reinterpret_cast<LPVOID *>(&g_OriginalTerminateProcess));
+        const MH_STATUS exitHookStatus = MH_CreateHookApi(L"kernel32", "ExitProcess", HookPointer(&HookedExitProcess), reinterpret_cast<LPVOID *>(&g_OriginalExitProcess));
+        const MH_STATUS terminateHookStatus = MH_CreateHookApi(L"kernel32", "TerminateProcess", HookPointer(&HookedTerminateProcess), reinterpret_cast<LPVOID *>(&g_OriginalTerminateProcess));
         if (exitHookStatus != MH_OK || terminateHookStatus != MH_OK)
         {
             PortalVrLog("Failed to create exit hooks exit=%d terminate=%d", exitHookStatus, terminateHookStatus);
@@ -355,12 +362,12 @@ namespace
         if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll"))
             ldrLoadDllAddress = reinterpret_cast<void *>(GetProcAddress(ntdll, "LdrLoadDll"));
 
-        const MH_STATUS hookAStatus = MH_CreateHookApi(L"kernel32", "LoadLibraryA", &HookedLoadLibraryA, reinterpret_cast<LPVOID *>(&g_OriginalLoadLibraryA));
-        const MH_STATUS hookWStatus = MH_CreateHookApi(L"kernel32", "LoadLibraryW", &HookedLoadLibraryW, reinterpret_cast<LPVOID *>(&g_OriginalLoadLibraryW));
-        const MH_STATUS hookExAStatus = MH_CreateHookApi(L"kernel32", "LoadLibraryExA", &HookedLoadLibraryExA, reinterpret_cast<LPVOID *>(&g_OriginalLoadLibraryExA));
-        const MH_STATUS hookExWStatus = MH_CreateHookApi(L"kernel32", "LoadLibraryExW", &HookedLoadLibraryExW, reinterpret_cast<LPVOID *>(&g_OriginalLoadLibraryExW));
+        const MH_STATUS hookAStatus = MH_CreateHookApi(L"kernel32", "LoadLibraryA", HookPointer(&HookedLoadLibraryA), reinterpret_cast<LPVOID *>(&g_OriginalLoadLibraryA));
+        const MH_STATUS hookWStatus = MH_CreateHookApi(L"kernel32", "LoadLibraryW", HookPointer(&HookedLoadLibraryW), reinterpret_cast<LPVOID *>(&g_OriginalLoadLibraryW));
+        const MH_STATUS hookExAStatus = MH_CreateHookApi(L"kernel32", "LoadLibraryExA", HookPointer(&HookedLoadLibraryExA), reinterpret_cast<LPVOID *>(&g_OriginalLoadLibraryExA));
+        const MH_STATUS hookExWStatus = MH_CreateHookApi(L"kernel32", "LoadLibraryExW", HookPointer(&HookedLoadLibraryExW), reinterpret_cast<LPVOID *>(&g_OriginalLoadLibraryExW));
         const MH_STATUS ldrHookStatus = ldrLoadDllAddress
-            ? MH_CreateHook(ldrLoadDllAddress, &HookedLdrLoadDll, reinterpret_cast<LPVOID *>(&g_OriginalLdrLoadDll))
+            ? MH_CreateHook(ldrLoadDllAddress, HookPointer(&HookedLdrLoadDll), reinterpret_cast<LPVOID *>(&g_OriginalLdrLoadDll))
             : MH_ERROR_NOT_EXECUTABLE;
         if (hookAStatus != MH_OK || hookWStatus != MH_OK || hookExAStatus != MH_OK || hookExWStatus != MH_OK || ldrHookStatus != MH_OK)
         {
@@ -409,8 +416,8 @@ namespace
             return;
         }
 
-        const MH_STATUS coCreateInstanceStatus = MH_CreateHookApi(L"ole32", "CoCreateInstance", &HookedCoCreateInstance, reinterpret_cast<LPVOID *>(&g_OriginalCoCreateInstance));
-        const MH_STATUS coCreateInstanceExStatus = MH_CreateHookApi(L"ole32", "CoCreateInstanceEx", &HookedCoCreateInstanceEx, reinterpret_cast<LPVOID *>(&g_OriginalCoCreateInstanceEx));
+        const MH_STATUS coCreateInstanceStatus = MH_CreateHookApi(L"ole32", "CoCreateInstance", HookPointer(&HookedCoCreateInstance), reinterpret_cast<LPVOID *>(&g_OriginalCoCreateInstance));
+        const MH_STATUS coCreateInstanceExStatus = MH_CreateHookApi(L"ole32", "CoCreateInstanceEx", HookPointer(&HookedCoCreateInstanceEx), reinterpret_cast<LPVOID *>(&g_OriginalCoCreateInstanceEx));
         if (coCreateInstanceStatus != MH_OK || coCreateInstanceExStatus != MH_OK)
         {
             PortalVrLog(
@@ -529,10 +536,10 @@ namespace
         if (!GetModuleHandleA("tier0.dll"))
             return;
 
-        const MH_STATUS errorHookStatus = MH_CreateHookApi(L"tier0.dll", "Error", &HookedTier0Error, reinterpret_cast<LPVOID *>(&g_OriginalTier0Error));
-        const MH_STATUS warningHookStatus = MH_CreateHookApi(L"tier0.dll", "Warning", &HookedTier0Warning, reinterpret_cast<LPVOID *>(&g_OriginalTier0Warning));
-        const MH_STATUS conWarningHookStatus = MH_CreateHookApi(L"tier0.dll", "ConWarning", &HookedTier0ConWarning, reinterpret_cast<LPVOID *>(&g_OriginalTier0ConWarning));
-        const MH_STATUS devWarningHookStatus = MH_CreateHookApi(L"tier0.dll", "DevWarning", &HookedTier0DevWarning, reinterpret_cast<LPVOID *>(&g_OriginalTier0DevWarning));
+        const MH_STATUS errorHookStatus = MH_CreateHookApi(L"tier0.dll", "Error", HookPointer(&HookedTier0Error), reinterpret_cast<LPVOID *>(&g_OriginalTier0Error));
+        const MH_STATUS warningHookStatus = MH_CreateHookApi(L"tier0.dll", "Warning", HookPointer(&HookedTier0Warning), reinterpret_cast<LPVOID *>(&g_OriginalTier0Warning));
+        const MH_STATUS conWarningHookStatus = MH_CreateHookApi(L"tier0.dll", "ConWarning", HookPointer(&HookedTier0ConWarning), reinterpret_cast<LPVOID *>(&g_OriginalTier0ConWarning));
+        const MH_STATUS devWarningHookStatus = MH_CreateHookApi(L"tier0.dll", "DevWarning", HookPointer(&HookedTier0DevWarning), reinterpret_cast<LPVOID *>(&g_OriginalTier0DevWarning));
         if (errorHookStatus != MH_OK || warningHookStatus != MH_OK || conWarningHookStatus != MH_OK || devWarningHookStatus != MH_OK)
         {
             PortalVrLog(

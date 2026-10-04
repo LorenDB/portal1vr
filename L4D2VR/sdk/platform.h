@@ -733,6 +733,10 @@ typedef void * HINSTANCE;
 // Note: can't use builtin offsetof because many use cases (esp. in templates) wouldn't compile due to restrictions on the builtin offsetof
 //#define offsetof( type, var ) __builtin_offsetof( type, var ) 
 #define offsetof(s,m)	( (size_t)&(((s *)0x1000000)->m) - 0x1000000u )
+#elif defined(__clang__)
+#include <stddef.h>
+#undef offsetof
+#define offsetof(s,m) __builtin_offsetof(s, m)
 #else
 #include <stddef.h>
 #undef offsetof

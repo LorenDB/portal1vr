@@ -18,6 +18,8 @@
 #include "../dxvk/src/d3d9/d3d9_vr.h"
 #include "debuglog.h"
 #include "cameracollision.h"
+#include "eye_bounds.h"
+#include "msvc_openvr_abi.h"
 #include "portalpose.h"
 #include "optionalgungrip.h"
 #include "portaltrace.h"
@@ -109,14 +111,28 @@ VR::VR(Game *game)
 
     float tanHalfFov[2];
 
-    tanHalfFov[0] = std::max({ -l_left, l_right, -r_left, r_right });
-    tanHalfFov[1] = std::max({ -l_top, l_bottom, -r_top, r_bottom });
+    SymmetricHalfTangents(
+        l_left, l_right, l_top, l_bottom,
+        r_left, r_right, r_top, r_bottom,
+        tanHalfFov[0], tanHalfFov[1]);
 
-    // Each eye is rendered into its own complete symmetric Source target.
-    // Submitting asymmetric raw-projection bounds here double-applies the
-    // lens shift and makes the left eye appear cropped/warped in the headset.
-    m_TextureBounds[0] = { 0, 0, 1, 1 };
-    m_TextureBounds[1] = { 0, 0, 1, 1 };
+    // Each eye texture is symmetric overscan. SteamVR stretches the submitted
+    // subrect across that eye's raw frustum, and v = 0 is the top of the upright
+    // Vulkan image. Full bounds put the texture center on the frustum center, so
+    // a Quest 3's asymmetric raw projection diverges the eyes by about 30 degrees.
+    // A symmetric report (Pico) produces {0, 0, 1, 1} from the same formula.
+    const EyeTextureBounds leftBounds = EyeBoundsFromProjectionRaw(
+        l_left, l_right, l_top, l_bottom, tanHalfFov[0], tanHalfFov[1]);
+    const EyeTextureBounds rightBounds = EyeBoundsFromProjectionRaw(
+        r_left, r_right, r_top, r_bottom, tanHalfFov[0], tanHalfFov[1]);
+    m_TextureBounds[0] = { leftBounds.uMin, leftBounds.vMin, leftBounds.uMax, leftBounds.vMax };
+    m_TextureBounds[1] = { rightBounds.uMin, rightBounds.vMin, rightBounds.uMax, rightBounds.vMax };
+    PortalVrLog(
+        "Texture bounds left u[%.3f, %.3f] v[%.3f, %.3f] right u[%.3f, %.3f] v[%.3f, %.3f]",
+        m_TextureBounds[0].uMin, m_TextureBounds[0].uMax,
+        m_TextureBounds[0].vMin, m_TextureBounds[0].vMax,
+        m_TextureBounds[1].uMin, m_TextureBounds[1].uMax,
+        m_TextureBounds[1].vMin, m_TextureBounds[1].vMax);
 
     m_Aspect = tanHalfFov[0] / tanHalfFov[1];
     m_Fov = 2.0f * atan(tanHalfFov[0]) * 360 / (3.14159265358979323846 * 2);
@@ -666,8 +682,10 @@ void VR::UpdatePosesAndActions()
 
 void VR::GetViewParameters() 
 {
-    vr::HmdMatrix34_t eyeToHeadLeft = m_System->GetEyeToHeadTransform(vr::Eye_Left);
-    vr::HmdMatrix34_t eyeToHeadRight = m_System->GetEyeToHeadTransform(vr::Eye_Right);
+    vr::HmdMatrix34_t eyeToHeadLeft;
+    vr::HmdMatrix34_t eyeToHeadRight;
+    MsvcVR_GetEyeToHeadTransform(m_System, vr::Eye_Left, &eyeToHeadLeft);
+    MsvcVR_GetEyeToHeadTransform(m_System, vr::Eye_Right, &eyeToHeadRight);
     m_EyeToHeadTransformPosLeft.x = eyeToHeadLeft.m[0][3];
     m_EyeToHeadTransformPosLeft.y = eyeToHeadLeft.m[1][3];
     m_EyeToHeadTransformPosLeft.z = eyeToHeadLeft.m[2][3];
@@ -1307,11 +1325,13 @@ void VR::UpdateAutoCalibration()
     // SteamVR supplies an explicit transform for origin/floor/heading changes.
     // Compensate that transform exactly rather than treating head turns or
     // crouches as calibration errors.
-    const auto rawStanding=m_System->GetRawZeroPoseToStandingAbsoluteTrackingPose();
+    vr::HmdMatrix34_t rawStanding;
+    MsvcVR_GetRawZeroPose(m_System, &rawStanding);
     auto frame=AutoCalibration::SourceSpace(rawStanding.m);
     const auto space=vr::VRCompositor()->GetTrackingSpace();
     if(space==vr::TrackingUniverseSeated) {
-        const auto seated=m_System->GetSeatedZeroPoseToStandingAbsoluteTrackingPose();
+        vr::HmdMatrix34_t seated;
+        MsvcVR_GetSeatedZeroPose(m_System, &seated);
         frame=HandPose::Concat(HandPose::InverseRigid(AutoCalibration::SourceSpace(seated.m)),frame);
     } else if(space==vr::TrackingUniverseRawAndUncalibrated) frame=PortalPose::Frame({0,0,0},{0,0,0});
     if(m_CalibrationOrigin.Update(frame,m_AutoCalibration && !m_CenterPending,m_Center,m_RotationOffset.y)) {

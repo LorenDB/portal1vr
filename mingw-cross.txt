@@ -1,0 +1,15 @@
+[binaries]
+c = '/home/loren/code/toolchains/llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64/bin/i686-w64-mingw32-gcc'
+cpp = '/home/loren/code/toolchains/llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64/bin/i686-w64-mingw32-g++'
+ar = '/home/loren/code/toolchains/llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64/bin/i686-w64-mingw32-ar'
+strip = '/home/loren/code/toolchains/llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64/bin/i686-w64-mingw32-strip'
+windres = '/home/loren/code/toolchains/llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64/bin/i686-w64-mingw32-windres'
+
+[properties]
+needs_exe_wrapper = true
+
+[host_machine]
+system = 'windows'
+cpu_family = 'x86'
+cpu = 'i686'
+endian = 'little'
