@@ -202,6 +202,7 @@ VR::VR(Game *game)
 
     m_IsInitialized = true;
     m_IsVREnabled = true;
+    m_PrevFrameTime = std::chrono::steady_clock::now();
     PortalVrLog("VR::VR complete");
 }
 
@@ -256,6 +257,19 @@ int VR::SetActionManifest(const char *fileName)
 		m_ActionSupportLeft = 0;
 	if (m_Input->GetActionHandle("/actions/base/in/support_righthand", &m_ActionSupportRight) != vr::VRInputError_None)
 		m_ActionSupportRight = 0;
+	// Standardized SteamVR Input hand poses. The action manifest binds these
+	// for every shipped controller type, so they stay valid (and rebindable
+	// through Steam Input) where legacy controller roles do not.
+	if (m_Input->GetActionHandle("/actions/base/in/pose_lefthand", &m_ActionPoseLeft) != vr::VRInputError_None)
+		m_ActionPoseLeft = 0;
+	if (m_Input->GetActionHandle("/actions/base/in/pose_righthand", &m_ActionPoseRight) != vr::VRInputError_None)
+		m_ActionPoseRight = 0;
+	// Stable per-hand identifiers for pose restriction and future per-hand
+	// queries. Failures are non-fatal: the legacy role path remains.
+	if (m_Input->GetInputSourceHandle("/user/hand/left", &m_InputSourceLeft) != vr::VRInputError_None)
+		m_InputSourceLeft = vr::k_ulInvalidInputValueHandle;
+	if (m_Input->GetInputSourceHandle("/user/hand/right", &m_InputSourceRight) != vr::VRInputError_None)
+		m_InputSourceRight = vr::k_ulInvalidInputValueHandle;
 
     m_Input->GetActionSetHandle("/actions/main", &m_ActionSet);
     m_Input->GetActionSetHandle("/actions/base", &m_BaseActionSet);
@@ -273,6 +287,15 @@ int VR::SetActionManifest(const char *fileName)
     }
     m_ActiveActionSet = {};
     m_ActiveActionSet.ulActionSet = m_ActionSet;
+
+    PortalVrLog("Action handles set=%llu base=%llu left=%llu jump=%llu crouch=%llu use=%llu primary=%llu secondary=%llu walk=%llu turn=%llu poseL=%llu poseR=%llu srcL=%llu srcR=%llu",
+        (unsigned long long)m_ActionSet, (unsigned long long)m_BaseActionSet,
+        (unsigned long long)m_LeftActionSet, (unsigned long long)m_ActionJump,
+        (unsigned long long)m_ActionCrouch, (unsigned long long)m_ActionUse,
+        (unsigned long long)m_ActionPrimaryAttack, (unsigned long long)m_ActionSecondaryAttack,
+        (unsigned long long)m_ActionWalk, (unsigned long long)m_ActionTurn,
+        (unsigned long long)m_ActionPoseLeft, (unsigned long long)m_ActionPoseRight,
+        (unsigned long long)m_InputSourceLeft, (unsigned long long)m_InputSourceRight);
 
     return 0;
 }
@@ -503,6 +526,77 @@ void VR::SubmitVRTextures()
         vr::InputAnalogActionData_t walk{};
         auto inputError = m_Input->GetAnalogActionData(m_ActionWalk, &walk, sizeof(walk), vr::k_ulInvalidInputValueHandle);
         PortalVrLog("Tracking yaw=%f walkError=%d active=%d axes=%f,%f", m_HmdAngAbs.y, inputError, walk.bActive, walk.x, walk.y);
+        vr::InputAnalogActionData_t turn{};
+        const bool turnOk = GetAnalogActionData(m_ActionTurn, turn);
+        PortalVrLog("Turn action sampled=%d active=%d axes=%f,%f rotOffset=%f",
+            turnOk, turn.bActive, turn.x, turn.y, m_RotationOffset.y);
+        // One periodic snapshot of the gameplay-input gate and hand-tracking
+        // prerequisites: if the local player or engine trace never resolves,
+        // ProcessInput stays off (no stick turning) and UpdateTracking bails
+        // before computing hand poses (frozen gun/arms) even while headlook,
+        // firing, and locomotion keep working through other hooks.
+        auto *diagPlayer = m_Game->GetLocalPortalPlayer();
+        auto *diagTrace = m_Game->GetEngineTrace();
+        PortalVrLog("Gameplay state player=%p trace=%p hmdValid=%d leftValid=%d rightValid=%d handRel=%f,%f,%f",
+            diagPlayer, diagTrace,
+            m_HmdPose.isValid, m_LeftControllerPose.isValid, m_RightControllerPose.isValid,
+            m_RightControllerPosRel.x, m_RightControllerPosRel.y, m_RightControllerPosRel.z);
+        // Break down a null player into list/index/slot suspects. Worldspawn
+        // (entity 0) always exists in-game: if it resolves but entity 1 does
+        // not, the player is genuinely absent; if neither resolves, the list
+        // pointer or GetClientEntity slot is wrong for this client build.
+        IClientEntityList *diagList = m_Game->GetClientEntityList();
+        int diagIndex = -999;
+        if (IEngineClient *diagEng = m_Game->GetEngineClient())
+            diagIndex = diagEng->GetLocalPlayer();
+        void *diagWorld = diagList ? diagList->GetClientEntity(0) : nullptr;
+        void *diagOne = diagList ? diagList->GetClientEntity(1) : nullptr;
+        PortalVrLog("Entity chain list=%p localIndex=%d world=%p ent1=%p",
+            diagList, diagIndex, diagWorld, diagOne);
+        // Read-only vtable survey: log where slots 0-9 point. A genuine
+        // client.dll method lands inside client.dll's image; anything else
+        // is past the table or garbage. No slot is CALLED here, so this
+        // cannot crash or corrupt state like call-probing can.
+        {
+            static bool surveyed = false;
+            if (!surveyed && diagList)
+            {
+                surveyed = true;
+                HMODULE clientModule = GetModuleHandleA("client.dll");
+                uintptr_t *vtable = *reinterpret_cast<uintptr_t **>(diagList);
+                if (clientModule && SigScanner::IsReadable(reinterpret_cast<uintptr_t>(vtable), 10 * sizeof(uintptr_t)))
+                {
+                    const uintptr_t base = reinterpret_cast<uintptr_t>(clientModule);
+                    for (int slot = 0; slot < 10; ++slot)
+                    {
+                        const uintptr_t fn = vtable[slot];
+                        PortalVrLog("Entity vtable slot=%d fn=%p inClient=%d",
+                            slot, reinterpret_cast<void *>(fn),
+                            fn >= base && fn < base + 0x600000);
+                    }
+                }
+                else
+                {
+                    PortalVrLog("Entity vtable survey skipped list=%p module=%p",
+                        diagList, clientModule);
+                }
+            }
+        }
+        // 6DOF/crouch diagnosis: roomscale arriving at the HMD, what head
+        // collision does with it, and where the engine eye sits. A healthy
+        // roomscale lean shows hmdRelLen > 0 with blocked=0; a view pinned
+        // while hmdRelLen moves means collision (or a bad origin) eats it.
+        // During an IRL crouch, setupZ diving further than the physical HMD
+        // drop proves the engine duck dip stacks on top (double-dip).
+        PortalVrLog("Space origin setup=%f,%f,%f hmdRelLen=%f blocked=%d collideLen=%f hmdZ=%f standingZ=%f physCrouch=%d comp=%f btnDuck=%d standEye=%f",
+            m_SetupOrigin.x, m_SetupOrigin.y, m_SetupOrigin.z,
+            sqrtf(m_HmdPosRelative.LengthSqr()), m_CameraBlocked,
+            sqrtf(m_CameraCollisionOffset.LengthSqr()),
+            m_HmdPose.isValid ? m_HmdPose.TrackedDevicePos.z : -1.0f,
+            m_StandingHeightValid ? m_StandingHeight : -1.0f,
+            m_PhysicalCrouchHeld ? 1 : 0,
+            PhysicalDuckViewCompensation(m_SetupOrigin), IsButtonCrouchHeld() ? 1 : 0,
+            m_EngineStandEyeValid ? m_EngineStandEyeZ : -1.0f);
     }
     m_RenderedNewFrame = false;
 }
@@ -616,22 +710,50 @@ void VR::RepositionOverlays()
     vr::VROverlay()->SetOverlayWidthInMeters(m_HUDHandle, m_HudSize);*/
 }
 
-void VR::GetPoses() 
+bool VR::GetPoseActionPose(vr::VRActionHandle_t action, vr::TrackedDevicePose_t &poseOut)
+{
+    if (!action || !m_Input)
+        return false;
+    vr::InputPoseActionData_t data{};
+    vr::ETrackingUniverseOrigin origin = vr::TrackingUniverseStanding;
+    if (vr::VRCompositor())
+        origin = vr::VRCompositor()->GetTrackingSpace();
+    if (m_Input->GetPoseActionDataForNextFrame(action, origin, &data,
+            sizeof(data), vr::k_ulInvalidInputValueHandle) != vr::VRInputError_None)
+        return false;
+    if (!data.bActive || !data.pose.bPoseIsValid || !data.pose.bDeviceIsConnected)
+        return false;
+    poseOut = data.pose;
+    return true;
+}
+
+void VR::GetPoses()
 {
     vr::TrackedDevicePose_t hmdPose = m_Poses[vr::k_unTrackedDeviceIndex_Hmd];
 
-    vr::TrackedDeviceIndex_t leftControllerIndex = m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand);
-    vr::TrackedDeviceIndex_t rightControllerIndex = m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_RightHand);
-
-    if (m_LeftHanded)
-        std::swap(leftControllerIndex, rightControllerIndex);
-
+    // Prefer standardized SteamVR Input pose actions over legacy controller
+    // roles. Roles can return invalid indices on Quest 3 while the bound pose
+    // actions still track; keep roles only as a fallback for custom bindings
+    // without poses or drivers that predate the Input system.
+    vr::VRActionHandle_t logicalLeftPose = m_LeftHanded ? m_ActionPoseRight : m_ActionPoseLeft;
+    vr::VRActionHandle_t logicalRightPose = m_LeftHanded ? m_ActionPoseLeft : m_ActionPoseRight;
     vr::TrackedDevicePose_t leftControllerPose{};
     vr::TrackedDevicePose_t rightControllerPose{};
-    if (leftControllerIndex < vr::k_unMaxTrackedDeviceCount)
-        leftControllerPose = m_Poses[leftControllerIndex];
-    if (rightControllerIndex < vr::k_unMaxTrackedDeviceCount)
-        rightControllerPose = m_Poses[rightControllerIndex];
+    const bool leftViaAction = GetPoseActionPose(logicalLeftPose, leftControllerPose);
+    const bool rightViaAction = GetPoseActionPose(logicalRightPose, rightControllerPose);
+    if (!leftViaAction || !rightViaAction)
+    {
+        vr::TrackedDeviceIndex_t leftControllerIndex = m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand);
+        vr::TrackedDeviceIndex_t rightControllerIndex = m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_RightHand);
+
+        if (m_LeftHanded)
+            std::swap(leftControllerIndex, rightControllerIndex);
+
+        if (!leftViaAction && leftControllerIndex < vr::k_unMaxTrackedDeviceCount)
+            leftControllerPose = m_Poses[leftControllerIndex];
+        if (!rightViaAction && rightControllerIndex < vr::k_unMaxTrackedDeviceCount)
+            rightControllerPose = m_Poses[rightControllerIndex];
+    }
 
     GetPoseData(hmdPose, m_HmdPose);
     GetPoseData(leftControllerPose, m_LeftControllerPose);
@@ -664,19 +786,18 @@ void VR::UpdatePosesAndActions()
 	};
 	updateFingerSummary(m_LeftHanded ? m_ActionSkeletonRight : m_ActionSkeletonLeft, m_LeftFingerCurl, m_LeftSkeletonValid);
 	updateFingerSummary(m_LeftHanded ? m_ActionSkeletonLeft : m_ActionSkeletonRight, m_RightFingerCurl, m_RightSkeletonValid);
-	vr::VRControllerState_t offhandState{};
-	const auto offhand = m_System->GetTrackedDeviceIndexForControllerRole(
-		m_LeftHanded ? vr::TrackedControllerRole_RightHand : vr::TrackedControllerRole_LeftHand);
-	bool gripButton = offhand < vr::k_unMaxTrackedDeviceCount
-		&& m_System->GetControllerState(offhand, &offhandState, sizeof(offhandState))
-		&& (offhandState.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_Grip));
+	// Standardized support-grip input: the bound SteamVR Input boolean drives
+	// the optional two-handed grip so users can rebind it through Steam Input.
+	// The legacy IVRSystem::GetControllerState fallback is intentionally gone:
+	// it bypasses rebinding and under-reports squeeze-style grips on Quest 3.
+	// Without a bound support action, finger-curl squeeze still engages.
 	vr::InputDigitalActionData_t supportInput{};
 	const auto supportAction = m_LeftHanded ? m_ActionSupportRight : m_ActionSupportLeft;
 	const bool supportActionValid = supportAction && m_Input->GetDigitalActionData(supportAction, &supportInput,
 		sizeof(supportInput), vr::k_ulInvalidInputValueHandle) == vr::VRInputError_None
 		&& supportInput.bActive;
 	m_LeftGripPressed = supportActionValid ? supportInput.bState
-		: OptionalGunGrip::Squeeze(gripButton, m_LeftSkeletonValid, m_LeftFingerCurl, m_LeftGripPressed);
+		: OptionalGunGrip::Squeeze(false, m_LeftSkeletonValid, m_LeftFingerCurl, m_LeftGripPressed);
 	if (!m_LeftGripPressed || !m_LeftHandGunGrip) m_OptionalSupportActive = false;
 }
 
@@ -907,6 +1028,13 @@ void VR::ProcessMenuInput()
 
 bool VR::UpdateOptionalGunSupport(matrix3x4_t *target)
 {
+    // Without visible hands there is nothing to seat on the gun: the grip
+    // stays a plain crouch button and support never engages.
+    if (!m_ShowHands)
+    {
+        m_OptionalSupportActive = false;
+        return false;
+    }
     const auto controller = HandPose::Frame(-m_RightControllerRight,
         m_RightControllerUp, m_RightControllerForward, GetRightHandAbsPos());
     const auto support = HandPose::RigidOrientation(HandPose::Concat(controller, m_SupportFromController));
@@ -939,6 +1067,11 @@ void VR::ProcessInput()
     duration elapsed = currentTime - m_PrevFrameTime;
     float deltaTime = elapsed.count();
     m_PrevFrameTime = currentTime;
+    // m_PrevFrameTime starts at the clock epoch, so the first frame's delta
+    // is enormous; hitches can also spike it. Clamp so neither produces a
+    // giant snap/smooth turn from a single tick (smooth rate is deg/ms).
+    if (!(deltaTime >= 0.0f && deltaTime <= 100.0f))
+        deltaTime = 0.0f;
 
     vr::InputAnalogActionData_t analogActionData;
 
@@ -964,8 +1097,10 @@ void VR::ProcessInput()
         else
         {
             float deadzone = 0.2;
-            // smoother turning
-            float xNormalized = (abs(analogActionData.x) - deadzone) / (1 - deadzone);
+            // smoother turning. fabsf (not abs): unqualified abs on a float
+            // resolves to abs(int) under some toolchains, truncating the
+            // deflection and inverting/slowing smooth turns.
+            float xNormalized = (fabsf(analogActionData.x) - deadzone) / (1 - deadzone);
             if (analogActionData.x > deadzone)
             {
                 turnAngle = -m_TurnSpeed * deltaTime * xNormalized;
@@ -998,9 +1133,23 @@ void VR::ProcessInput()
         m_RotationOffset.y -= 360 * std::floor(m_RotationOffset.y / 360);
 		if (turnAngle != 0.0f)
 			UpdateHMDAngles();
+        static bool wasTurning = false;
+        const bool turning = turnAngle != 0.0f;
+        if (turning != wasTurning)
+        {
+            PortalVrLog("Stick turning %s x=%f rotOffset=%f",
+                turning ? "started" : "released", analogActionData.x, m_RotationOffset.y);
+            wasTurning = turning;
+        }
     }
 
-    if (PressedDigitalAction(m_ActionPrimaryAttack))
+    // Gameplay buttons are SteamVR Input booleans so they stay rebindable
+    // through Steam Input. Portal fire is PrimaryAttack (blue) plus
+    // SecondaryAttack (orange); interact is Use; locomotion extras are Jump
+    // and Crouch. CreateMove mirrors the same actions into the usercmd
+    // buttons, so a missed console-command tick cannot drop a shot, jump,
+    // duck, or pickup. The commands below keep legacy key state in sync.
+    if (IsPrimaryAttackHeld())
     {
         m_Game->ClientCmd_Unrestricted("+attack");
     }
@@ -1009,7 +1158,7 @@ void VR::ProcessInput()
         m_Game->ClientCmd_Unrestricted("-attack");
     }
 
-    if (PressedDigitalAction(m_ActionSecondaryAttack))
+    if (IsSecondaryAttackHeld())
     {
         m_Game->ClientCmd_Unrestricted("+attack2");
     }
@@ -1018,7 +1167,7 @@ void VR::ProcessInput()
         m_Game->ClientCmd_Unrestricted("-attack2");
     }
 
-    if (PressedDigitalAction(m_ActionJump))
+    if (IsJumpHeld())
     {
         m_Game->ClientCmd_Unrestricted("+jump");
     }
@@ -1027,10 +1176,12 @@ void VR::ProcessInput()
         m_Game->ClientCmd_Unrestricted("-jump");
     }
 
-    // The saved Pico/Touch mapping shares grip with crouch. Consume it only
-    // during the deliberate gun support gesture; other crouching is unchanged.
+    // The saved Pico/Touch mapping shares grip with crouch. Consume the
+    // button only during the deliberate gun support gesture. An IRL headset
+    // drop always crouches, independent of that button, so roomscale ducking
+    // works even while two-handing the gun.
     UpdateOptionalGunSupport();
-    if (PressedDigitalAction(m_ActionCrouch) && !m_OptionalSupportActive)
+    if (IsCrouchHeld())
     {
         m_Game->ClientCmd_Unrestricted("+duck");
     }
@@ -1042,7 +1193,7 @@ void VR::ProcessInput()
     // Keep the normal Source input state in sync, but only emit the console
     // command on an edge. CreateMove also mirrors this state into IN_USE so
     // the pickup controller sees a stable button during the same tick.
-    const bool useHeld = PressedDigitalAction(m_ActionUse);
+    const bool useHeld = IsUseHeld();
     // Publish the controller pose as soon as the action state is sampled. The
     // server-side grab callbacks can run before the next CreateMove callback;
     // keeping this snapshot here prevents that first pickup tick from falling
@@ -1298,9 +1449,124 @@ void VR::ResetPosition()
     m_HmdPosRelativeRawPrev = {0,0,0};
     m_CameraCollisionOffset = {0,0,0};
     m_CameraBlocked = false;
+    // Recalibrate standing eye height here so a physical crouch is measured
+    // against the current user and floor setup. TrackedDevicePos.z carries
+    // SteamVR up (meters) through GetPoseData's Y-up to Z-up mapping.
+    if (m_HmdPose.isValid && std::isfinite(m_HmdPose.TrackedDevicePos.z)
+        && m_HmdPose.TrackedDevicePos.z > 0.5f && m_HmdPose.TrackedDevicePos.z < 2.5f)
+    {
+        m_StandingHeight = m_HmdPose.TrackedDevicePos.z;
+        m_StandingHeightValid = true;
+    }
+    m_PhysicalCrouchHeld = false;
     m_CalibrationDrift.Reset();
     m_CalibrationStability.Reset();
     m_CalibrationSuppressUntil = GetTickCount64()+10000;
+}
+
+void VR::UpdatePhysicalCrouch()
+{
+    if (!m_PhysicalCrouchEnabled)
+    {
+        m_PhysicalCrouchHeld = false;
+        return;
+    }
+    if (!m_HmdPose.isValid || !std::isfinite(m_HmdPose.TrackedDevicePos.z))
+        return;
+    // Adopt the tallest recent standing height instead of freezing a seated
+    // calibration: players who recenter while seated still get IRL crouch.
+    const float height = m_HmdPose.TrackedDevicePos.z;
+    if (!m_StandingHeightValid && height > 0.5f && height < 2.5f)
+    {
+        m_StandingHeight = height;
+        m_StandingHeightValid = true;
+    }
+    if (m_StandingHeightValid && height > m_StandingHeight && height < 2.5f)
+        m_StandingHeight = m_StandingHeight * 0.995f + height * 0.005f;
+    if (!m_StandingHeightValid)
+        return;
+    const float drop = m_StandingHeight - height;
+    const float engage = std::clamp(m_PhysicalCrouchDrop, 0.1f, 0.8f);
+    const float release = std::max(engage - 0.1f, 0.05f);
+    if (!m_PhysicalCrouchHeld && drop >= engage)
+    {
+        m_PhysicalCrouchHeld = true;
+        PortalVrLog("Physical crouch engaged drop=%f hmdZ=%f standingZ=%f setupZ=%f",
+            drop, height, m_StandingHeight, m_SetupOrigin.z);
+    }
+    else if (m_PhysicalCrouchHeld && drop <= release)
+    {
+        m_PhysicalCrouchHeld = false;
+        PortalVrLog("Physical crouch released drop=%f hmdZ=%f standingZ=%f setupZ=%f",
+            drop, height, m_StandingHeight, m_SetupOrigin.z);
+    }
+}
+
+bool VR::IsJumpHeld()
+{
+    return PressedDigitalAction(m_ActionJump);
+}
+
+bool VR::IsUseHeld()
+{
+    return PressedDigitalAction(m_ActionUse);
+}
+
+bool VR::IsPrimaryAttackHeld()
+{
+    return PressedDigitalAction(m_ActionPrimaryAttack);
+}
+
+bool VR::IsSecondaryAttackHeld()
+{
+    return PressedDigitalAction(m_ActionSecondaryAttack);
+}
+
+bool VR::IsCrouchHeld()
+{
+    // The crouch button shares the offhand grip with the optional gun
+    // support, so it is consumed while supporting. IRL crouch always counts.
+    if (m_PhysicalCrouchHeld)
+        return true;
+    return IsButtonCrouchHeld();
+}
+
+bool VR::IsButtonCrouchHeld()
+{
+    return PressedDigitalAction(m_ActionCrouch) && !m_OptionalSupportActive;
+}
+
+void VR::UpdateEngineStandEye(const Vector& setupOrigin)
+{
+    if (!m_IsVREnabled || !m_HmdPose.isValid || !std::isfinite(setupOrigin.z))
+        return;
+    // Freeze while any duck is commanded so the dipped eye is never learned
+    // as standing. Otherwise snap on teleports/spawns and ease after slow
+    // rides (elevators) so later compensation stays exact.
+    if (IsCrouchHeld())
+        return;
+    if (!m_EngineStandEyeValid || fabsf(setupOrigin.z - m_EngineStandEyeZ) > 24.0f)
+    {
+        m_EngineStandEyeZ = setupOrigin.z;
+        m_EngineStandEyeValid = true;
+    }
+    else
+    {
+        m_EngineStandEyeZ += (setupOrigin.z - m_EngineStandEyeZ) * 0.02f;
+    }
+}
+
+float VR::PhysicalDuckViewCompensation(const Vector& setupOrigin)
+{
+    // Physical-only duck: the hull (IN_DUCK) still shrinks, but the rendered
+    // camera gets the engine's eye dip back, cancelling the double dip. With
+    // the button also held this stays classic (no compensation). Bounded so a
+    // teleport-while-crouched cannot fling the camera; standing re-snaps.
+    if (!m_PhysicalCrouchHeld || IsButtonCrouchHeld() || !m_EngineStandEyeValid)
+        return 0.0f;
+    if (!std::isfinite(setupOrigin.z))
+        return 0.0f;
+    return std::clamp(m_EngineStandEyeZ - setupOrigin.z, 0.0f, 48.0f);
 }
 
 void VR::UpdateAutoCalibration()
@@ -1416,6 +1682,7 @@ void VR::UpdateTracking()
     GetPoses();
     UpdateAutoCalibration();
     if (m_CenterPending && m_HmdPose.isValid) ResetPosition();
+    UpdatePhysicalCrouch();
 
     // HMD tracking
     Vector hmdPosLocal = m_HmdPose.TrackedDevicePos;
@@ -1433,8 +1700,21 @@ void VR::UpdateTracking()
     m_HmdPosRelative = hmdPosCorrected * m_VRScale;
 
     C_BasePlayer* localPlayer = reinterpret_cast<C_BasePlayer *>(m_Game->GetLocalPortalPlayer());
-    if (!localPlayer)
-        return;
+    {
+        // Edge-log hand-tracking stalls: poses keep updating above, but the
+        // controller/gun/arm transforms below need the player entity. A stuck
+        // "paused" here plus a frozen gun means entity resolution is broken.
+        static bool wasMissing = false;
+        const bool missing = (localPlayer == nullptr);
+        if (missing != wasMissing)
+        {
+            PortalVrLog("Hand tracking %s: local player entity %s",
+                missing ? "paused" : "resumed", missing ? "unavailable" : "available");
+            wasMissing = missing;
+        }
+        if (missing)
+            return;
+    }
 
     // Roomscale setup
     /*Vector cameraMovingDirection = m_Center - m_SetupOriginPrev;
@@ -1536,9 +1816,11 @@ void VR::UpdateTracking()
     QAngle::VectorAngles(m_RightControllerForward, m_RightControllerUp, m_RightControllerAngAbs);
     m_RightControllerAngAbs.Normalize();
 
-    PositionAngle viewmodelOffset = PositionAngle{ {4.5, -1, 1.5}, {0,0,0} };
+    // Apply both hardcoded and custom (from config) viewmodel offsets here.
+    // The 8.5 forward seats the gun's grip in the palm (see GetRightHandAbsPos:
+    // the pair must move together). ViewmodelPosCustomOffset still applies on top.
+    PositionAngle viewmodelOffset = PositionAngle{ {8.5, -1, 1.5}, {0,0,0} };
 
-    // Apply both hardcoded and custom (from config) viewmodel offsets here:
     m_ViewmodelPosOffset = viewmodelOffset.position + m_ViewmodelPosCustomOffset;
     m_ViewmodelAngOffset = viewmodelOffset.angle + m_ViewmodelAngCustomOffset;
 
@@ -1615,6 +1897,7 @@ void VR::UpdateCameraCollision(Vector setupOrigin)
     }
 
     const Vector desired = GetViewOrigin(setupOrigin);
+    UpdateEngineStandEye(setupOrigin);
     const float radius = CameraCollision::HullRadius(m_Ipd * m_IpdScale * m_VRScale, m_Fov, m_Aspect);
     const Vector extent(radius, radius, radius);
     Ray_t ray{};
@@ -1666,9 +1949,25 @@ void VR::UpdateCameraCollision(Vector setupOrigin)
     m_CameraCollisionOffset = safe - desired;
     const bool blocked = m_CameraCollisionOffset.LengthSqr() > 0.0001f;
     if (blocked != m_CameraBlocked)
+    {
         PortalVrLog("Head collision blocked=%d fraction=%f radius=%f correction=%f,%f,%f startsolid=%d allsolid=%d",
             blocked, trace.fraction, radius, m_CameraCollisionOffset.x, m_CameraCollisionOffset.y,
             m_CameraCollisionOffset.z, trace.startsolid, trace.allsolid);
+        // Discriminator: the same sweep as a line ray. A line from open air
+        // can only start solid via an unfiltered self-hit, so line-solid
+        // means the skip filter is broken while line-clear with hull-solid
+        // means the hull/extents are misread (or the eye is truly embedded).
+        Ray_t lineRay{};
+        lineRay.Init(setupOrigin, desired);
+        CGameTrace lineTrace;
+        lineTrace.fraction = 1.0f;
+        lineTrace.startsolid = lineTrace.allsolid = false;
+        const bool lineOk = m_Game->TraceRay(lineRay, mask, &filter, &lineTrace);
+        PortalVrLog("Head collision line usedPortal=%d ok=%d fraction=%f startsolid=%d allsolid=%d contents=%d start=%f,%f,%f end=%f,%f,%f",
+            usedPortal, lineOk, lineTrace.fraction, lineTrace.startsolid, lineTrace.allsolid,
+            lineTrace.contents, setupOrigin.x, setupOrigin.y, setupOrigin.z,
+            desired.x, desired.y, desired.z);
+    }
     m_CameraBlocked = blocked;
 }
 
@@ -1676,6 +1975,7 @@ Vector VR::GetViewOriginLeft(Vector setupOrigin)
 {
     Vector viewOriginLeft = GetViewOrigin(setupOrigin);
     viewOriginLeft -= m_HmdRight * ((m_Ipd * m_IpdScale * m_VRScale) / 2);
+    viewOriginLeft.z += PhysicalDuckViewCompensation(setupOrigin);
 
     return viewOriginLeft;
 }
@@ -1684,6 +1984,7 @@ Vector VR::GetViewOriginRight(Vector setupOrigin)
 {
     Vector viewOriginRight = GetViewOrigin(setupOrigin);
     viewOriginRight += m_HmdRight * ((m_Ipd * m_IpdScale * m_VRScale) / 2);
+    viewOriginRight.z += PhysicalDuckViewCompensation(setupOrigin);
 
     return viewOriginRight;
 }
@@ -2020,6 +2321,15 @@ void VR::ParseConfigFile()
     parseOrDefault("6DOF", m_6DOF, true);
     // Optional in older configs: upgrading must not introduce a modal warning.
     if (userConfig.count("AutoCalibration")) parseOrDefault("AutoCalibration", m_AutoCalibration, true);
+    // Physical crouch is optional for the same reason: older installs keep
+    // working, and the installer appends the shipped defaults on upgrade.
+    if (userConfig.count("PhysicalCrouch")) parseOrDefault("PhysicalCrouch", m_PhysicalCrouchEnabled, true);
+    if (userConfig.count("PhysicalCrouchDrop")) parseOrDefault("PhysicalCrouchDrop", m_PhysicalCrouchDrop, 0.25f);
+    m_PhysicalCrouchDrop = std::isfinite(m_PhysicalCrouchDrop)
+        ? std::clamp(m_PhysicalCrouchDrop, 0.1f, 0.8f) : 0.25f;
+    // Hidden visibility toggle: optional like PhysicalCrouch so older
+    // configs load without a modal warning; the installer appends the default.
+    if (userConfig.count("ShowHands")) parseOrDefault("ShowHands", m_ShowHands, true);
     /*parseOrDefault("HudDistance", m_HudDistance, 1.3f);
     parseOrDefault("HudSize", m_HudSize, 4.0f);
     parseOrDefault("HudAlwaysVisible", m_HudAlwaysVisible, false);*/

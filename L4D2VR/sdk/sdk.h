@@ -82,6 +82,17 @@ struct PositionAngle
 	QAngle angle;
 };
 
+// Portal's VClientEntityList003 layout, established by live telemetry on the
+// verified client build (timestamp 0x68362d89) plus a read-only vtable survey
+// (slots 0-8 all point into client.dll; slot 9 is string data, i.e. the table
+// ends at 8):
+//   slot 3 -> null for every entity number (a FromHandle lookup, safe),
+//   slot 4 -> map-population counts (NumberOfEntities-shaped, safe),
+//   slot 5+ -> MUST NOT be called (no-arg or mutating; crashed twice).
+// GetClientEntity is tried at slot 2 next: every slot 1-4 takes an int-sized
+// argument, so the call shape is stack-safe whatever lives there. Callers only
+// null-check the result, and renderable users validate targets, so a wrong
+// but readable pointer degrades to disabled features rather than a crash.
 class IClientEntityList
 {
 public:
@@ -90,17 +101,13 @@ public:
 	// Get IClientNetworkable interface for specified entity
 	virtual void* GetClientNetworkable(int entnum) = 0;
 
-	virtual void* GetClientNetworkableArray(void) = 0;
 	virtual void* GetClientEntity(int entnum) = 0;
+
+	virtual void* GetClientNetworkableFromHandle(int hEnt) = 0;
+	virtual void* GetClientUnknownFromHandle(int hEnt) = 0;
 
 	// Returns number of entities currently in use
 	virtual int  NumberOfEntities(bool bIncludeNonNetworkable) = 0;
-
-	virtual void* GetClientUnknownFromHandle(int hEnt) = 0;
-	virtual void* GetClientNetworkableFromHandle(int hEnt) = 0;
-
-	// NOTE: This function is only a convenience wrapper.
-	// It returns GetClientNetworkable( entnum )->GetIClientEntity().
 	virtual void* GetClientEntityFromHandle(int hEnt) = 0;
 
 

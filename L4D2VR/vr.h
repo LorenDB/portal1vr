@@ -197,6 +197,15 @@ public:
 	vr::VRActionHandle_t m_Pause = 0;
 	vr::VRActionHandle_t m_ActionSkeletonLeft = 0;
 	vr::VRActionHandle_t m_ActionSkeletonRight = 0;
+	// Standardized SteamVR Input pose actions (declared in /actions/base).
+	// The compositor pose array plus GetTrackedDeviceIndexForControllerRole is
+	// the legacy path: roles can be invalid on Quest 3 while Input poses are
+	// still tracked. Prefer pose actions, fall back to legacy roles.
+	vr::VRActionHandle_t m_ActionPoseLeft = 0;
+	vr::VRActionHandle_t m_ActionPoseRight = 0;
+	vr::VRInputValueHandle_t m_InputSourceLeft = 0;
+	vr::VRInputValueHandle_t m_InputSourceRight = 0;
+	bool GetPoseActionPose(vr::VRActionHandle_t action, vr::TrackedDevicePose_t &poseOut);
 	// A relaxed hand is slightly cupped.  Pico's SteamVR bridge does not expose
 	// a skeleton stream, so these values are also the procedural fallback until
 	// a controller reports real curl data.
@@ -250,12 +259,41 @@ public:
 	float m_VRScale = 43.2f;
 	float m_IpdScale = 1.0f;
 	bool m_6DOF = true;
+	// Physical crouch: an IRL headset drop also asserts duck, independent of
+	// the crouch button so Quest 3 roomscale ducking works without rebinding.
+	bool m_PhysicalCrouchEnabled = true;
+	float m_PhysicalCrouchDrop = 0.25f;
+	float m_StandingHeight = 0.0f;
+	bool m_StandingHeightValid = false;
+	bool m_PhysicalCrouchHeld = false;
+	bool IsPhysicalCrouchHeld() const { return m_PhysicalCrouchHeld; }
+	bool IsCrouchHeld();
+	bool IsButtonCrouchHeld();
+	bool IsJumpHeld();
+	bool IsUseHeld();
+	bool IsPrimaryAttackHeld();
+	bool IsSecondaryAttackHeld();
+	void UpdatePhysicalCrouch();
+	// Engine standing eye height (Source units), tracked while unducked.
+	// A physical crouch keeps IN_DUCK pressed so the server hull shrinks, but
+	// the engine also dips the eye on top of the real head drop (double dip).
+	// The compensation below adds that engine dip back at the rendered camera
+	// for physical-only ducks, so the view follows the head 1:1. Button ducks
+	// keep the classic view dip. Elevators/portals re-snap on stand.
+	float m_EngineStandEyeZ = 0.0f;
+	bool m_EngineStandEyeValid = false;
+	void UpdateEngineStandEye(const Vector& setupOrigin);
+	float PhysicalDuckViewCompensation(const Vector& setupOrigin);
 	float m_HudDistance = 1.3f;
 	float m_HudSize = 4.0f;
 	bool m_HudAlwaysVisible = false;
 	int m_AimMode = 2;
 	bool m_FirstPersonBody = true;
 	bool m_FirstPersonBodyHideUpper = true;
+	// Show hand/arm models. False hides the bare hands and collapses the
+	// gun model's integrated arm into the receiver, leaving only the portal
+	// gun mesh. Aim, pickup, and muzzle logic are untouched.
+	bool m_ShowHands = true;
 	float m_FirstPersonBodyBackOffset = 8.0f;
 
 	VR() {};
@@ -282,7 +320,12 @@ public:
 	Vector GetLeftControllerAbsPos() { return GetRightControllerAbsPos() - m_RightControllerPosRel + m_LeftControllerPosRel; }
 	Vector GetRightHandAbsPos() {
 		// The controller tracks the grip, while the model anchor is the wrist.
-		return GetRightControllerAbsPos() + m_RightControllerForward * (m_ViewmodelPosCustomOffset.x - 2.5f)
+		// The -6.5 seats the gun's grip in the palm instead of leaving the
+		// physical hand on the model's wrist joint; it must stay paired with
+		// the viewmodel forward offset in UpdateTracking (both shift the
+		// gun/hand/socket assembly together so aim, pickup, and the muzzle
+		// effect stay glued to the visible gun).
+		return GetRightControllerAbsPos() + m_RightControllerForward * (m_ViewmodelPosCustomOffset.x - 6.5f)
 			+ m_RightControllerRight * (m_ViewmodelPosCustomOffset.y - 1.0f)
 			+ m_RightControllerUp * m_ViewmodelPosCustomOffset.z;
 	}

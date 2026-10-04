@@ -5,8 +5,11 @@ LeftHanded=false
 VRScale=43.2 # Real word units to source units scale
 IPDScale=1.0 # Scale of interpupillary distance 
 6DOF=true
+PhysicalCrouch=true # IRL headset drop also ducks; set false for button-only crouch
+PhysicalCrouchDrop=0.25 # Headset drop in meters that starts a crouch (0.1-0.8)
 AutoCalibration=true # Preserve tracking-origin position/height/heading changes; ease horizontal alignment only with stable tracking and body/head route mismatch
 AimMode=2 # 0 = None, 1 = Crosshair (does not work properly), 2 = Laser sight/beam
+ShowHands=true # Draw hand/arm models; false shows only the portal gun (off-hand grip becomes plain crouch)
 FirstPersonBody=true # Draw the local player body in the VR eye and desktop mirror views
 FirstPersonBodyBackOffset=8 # Move the first-person torso backward in Source units (0-24); restart Portal after changing
 FirstPersonBodyHideUpper=true # Keep the head and arm branches out of the near-camera view while retaining torso and legs

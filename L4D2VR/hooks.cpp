@@ -932,7 +932,9 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 
 	if (!m_VR->m_CreatedVRTextures)
 	{
-		setup.origin = portalCamera.Map(m_VR->GetViewOrigin(position));
+		Vector desktopOrigin = m_VR->GetViewOrigin(position);
+		desktopOrigin.z += m_VR->PhysicalDuckViewCompensation(position);
+		setup.origin = portalCamera.Map(desktopOrigin);
 		hkRenderView.fOriginal(ecx, setup, nClearFlags, whatToDraw);
 		m_PushedHud = false;
 		m_VR->m_RenderedNewFrame = true;
@@ -977,6 +979,7 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	s_ActiveFirstPersonBodyPass = true;
 		ExpectBodyView(leftEyeView);
 		s_BodyCameraCenter = m_VR->GetViewOrigin(position);
+		s_BodyCameraCenter.z += m_VR->PhysicalDuckViewCompensation(position);
 		hkRenderView.fOriginal(ecx, leftEyeView, nClearFlags, whatToDraw & ~RENDERVIEW_DRAWHUD);
 	s_ActiveFirstPersonBodyPass = false;
 	s_InlineBodyDrawEligible = false;
@@ -1002,6 +1005,7 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	s_ActiveFirstPersonBodyPass = true;
 		ExpectBodyView(rightEyeView);
 		s_BodyCameraCenter = m_VR->GetViewOrigin(position);
+		s_BodyCameraCenter.z += m_VR->PhysicalDuckViewCompensation(position);
 		hkRenderView.fOriginal(ecx, rightEyeView, nClearFlags, whatToDraw & ~RENDERVIEW_DRAWHUD);
 	s_ActiveFirstPersonBodyPass = false;
 	s_InlineBodyDrawEligible = false;
@@ -1062,6 +1066,24 @@ bool __fastcall Hooks::dCreateMove(void *ecx, void *edx, float flInputSampleTime
 		const bool useHeld = m_VR->PressedDigitalAction(m_VR->m_ActionUse);
 		m_VR->SnapshotGrabPose();
 		cmd->buttons = useHeld ? (cmd->buttons | IN_USE) : (cmd->buttons & ~IN_USE);
+		// Drive gameplay buttons directly from the standardized SteamVR Input
+		// booleans so Quest 3 firing, jumping, ducking, and reloading do not
+		// depend on console-command timing or desktop key bindings. Users can
+		// rebind every one of these actions through Steam Input; the manifest
+		// names (Jump, Crouch, Use, PrimaryAttack, SecondaryAttack) stay the
+		// contract. The crouch button shares the offhand grip with the
+		// optional gun support, so it is consumed while supporting; an IRL
+		// headset drop always ducks independently.
+		const bool primaryHeld = m_VR->IsPrimaryAttackHeld();
+		const bool secondaryHeld = m_VR->IsSecondaryAttackHeld();
+		const bool jumpHeld = m_VR->IsJumpHeld();
+		const bool reloadHeld = m_VR->PressedDigitalAction(m_VR->m_ActionReload);
+		const bool crouchHeld = m_VR->IsCrouchHeld();
+		cmd->buttons = primaryHeld ? (cmd->buttons | IN_ATTACK) : (cmd->buttons & ~IN_ATTACK);
+		cmd->buttons = secondaryHeld ? (cmd->buttons | IN_ATTACK2) : (cmd->buttons & ~IN_ATTACK2);
+		cmd->buttons = jumpHeld ? (cmd->buttons | IN_JUMP) : (cmd->buttons & ~IN_JUMP);
+		cmd->buttons = crouchHeld ? (cmd->buttons | IN_DUCK) : (cmd->buttons & ~IN_DUCK);
+		cmd->buttons = reloadHeld ? (cmd->buttons | IN_RELOAD) : (cmd->buttons & ~IN_RELOAD);
 		cmd->viewangles = m_VR->m_HmdAngAbs;
 		static bool lastUseHeld = false;
 		if (useHeld != lastUseHeld) {
@@ -1523,6 +1545,12 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
                         HandPose::Concat(reference[24], OptionalGunGrip::Socket()));
                     m_VR->m_SupportLastSeen = GetTickCount64();
                 } else {
+                    // ShowHands=false hides the bare-hand model outright: drawing
+                    // the stock hands at a tracked pose would be worse than none.
+                    // (The gun model's own arm is collapsed below instead, so the
+                    // visible result is the portal gun alone.)
+                    if (!m_VR->m_ShowHands)
+                        return;
                     auto leftTarget = HandPose::ControllerHandFrame(
                         m_VR->m_LeftHandForward, m_VR->m_LeftControllerRight,
                         m_VR->m_LeftHandUp, m_VR->GetLeftHandAbsPos());
@@ -1543,6 +1571,16 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
                 static int logged = 0;
                 if (logged++ < 6) PortalVrLog("Hand-anchored model=%s wrist=%f,%f,%f", name,
                     tracked[gun ? 8 : 27][0][3],tracked[gun ? 8 : 27][1][3],tracked[gun ? 8 : 27][2][3]);
+                if (gun && !m_VR->m_ShowHands && count > 25)
+                {
+                    // Gun-only mode: fold the gun model's integrated arm and
+                    // fingers (bones 0-23) into the receiver (bone 25, the
+                    // front cover) so only the portal gun mesh remains visible.
+                    // Folding into the base (bone 24) leaves a crumpled blob at
+                    // the grip, outside the housing. Aim metadata above already
+                    // ran, so shots, pickup, and effects are unaffected.
+                    for (int i = 0; i < 24; ++i) tracked[i] = tracked[25];
+                }
                 return DrawTrackedModel(ecx,state,info,tracked,count);
             }
         }
