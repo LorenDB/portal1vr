@@ -118,10 +118,14 @@ dxvk_src = files([
 
 thread_dep = dependency('threads')
 
+fs = import('fs')
+openvr_include = join_paths(fs.parent(meson.project_source_root()), 'thirdparty/openvr/include')
+
 dxvk_lib = static_library('dxvk', dxvk_src, glsl_generator.process(dxvk_shaders), dxvk_version,
   link_with           : [ util_lib, spirv_lib ],
   dependencies        : [ thread_dep, vkcommon_dep ] + dxvk_extradep,
   include_directories : [ dxvk_include_path ],
+  cpp_args            : [ '-I' + openvr_include ],
 )
 
 dxvk_dep = declare_dependency(

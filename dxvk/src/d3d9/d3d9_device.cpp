@@ -26,6 +26,7 @@
 
 #include "L4D2VR/game.h"
 #include "L4D2VR/vr.h"
+#include "L4D2VR/debuglog.h"
 #include "L4D2VR/sdk/sdk.h"
 #include "d3d9_vr.h"
 
@@ -379,11 +380,8 @@ namespace dxvk {
 
 
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::Reset(D3DPRESENT_PARAMETERS* pPresentationParameters) {
-    if (g_Game && g_Game->m_VR)
-    {
-        pPresentationParameters->BackBufferWidth = g_Game->m_VR->m_RenderWidth;
-        pPresentationParameters->BackBufferHeight = g_Game->m_VR->m_RenderHeight;
-    }
+    // Keep the desktop mode requested by Source. VR uses separate eye targets;
+    // replacing this with the headset resolution breaks fullscreen resets.
 
     D3D9DeviceLock lock = LockDevice();
 
@@ -528,25 +526,25 @@ namespace dxvk {
           if (texID == VR::Texture_LeftEye)
           {
               textureTarget = &g_Game->m_VR->m_VKLeftEye;
-              texture.ref()->GetSurfaceLevel(0, &g_Game->m_VR->m_D9LeftEyeSurface);
+              texture->GetSurfaceLevel(0, &g_Game->m_VR->m_D9LeftEyeSurface);
               g_D3DVR9->GetVRDesc(g_Game->m_VR->m_D9LeftEyeSurface, &texDesc);
           }
           else if (texID == VR::Texture_RightEye)
           {
               textureTarget = &g_Game->m_VR->m_VKRightEye;
-              texture.ref()->GetSurfaceLevel(0, &g_Game->m_VR->m_D9RightEyeSurface);
+              texture->GetSurfaceLevel(0, &g_Game->m_VR->m_D9RightEyeSurface);
               g_D3DVR9->GetVRDesc(g_Game->m_VR->m_D9RightEyeSurface, &texDesc);
           }
           else if (texID == VR::Texture_HUD)
           {
               textureTarget = &g_Game->m_VR->m_VKHUD;
-              texture.ref()->GetSurfaceLevel(0, &g_Game->m_VR->m_D9HUDSurface);
+              texture->GetSurfaceLevel(0, &g_Game->m_VR->m_D9HUDSurface);
               g_D3DVR9->GetVRDesc(g_Game->m_VR->m_D9HUDSurface, &texDesc);
           }
           else if (texID == VR::Texture_Blank)
           {
               textureTarget = &g_Game->m_VR->m_VKBlankTexture;
-              texture.ref()->GetSurfaceLevel(0, &g_Game->m_VR->m_D9BlankSurface);
+              texture->GetSurfaceLevel(0, &g_Game->m_VR->m_D9BlankSurface);
               g_D3DVR9->GetVRDesc(g_Game->m_VR->m_D9BlankSurface, &texDesc);
           }
 
@@ -1313,6 +1311,30 @@ namespace dxvk {
     if (unlikely(rt != nullptr && !(texInfo->Desc()->Usage & D3DUSAGE_RENDERTARGET)))
       return D3DERR_INVALIDCALL;
 
+    // Source reallocates render targets when loading a map. Capture the surface
+    // it binds for each eye instead of retaining the initial allocation forever.
+    if (RenderTargetIndex == 0 && g_Game && g_Game->m_VR && g_D3DVR9) {
+      auto *vrState = g_Game->m_VR;
+      const auto eye = vrState->m_BindingEyeTexture;
+      if (eye == VR::Texture_LeftEye || eye == VR::Texture_RightEye) {
+        auto &surface = eye == VR::Texture_LeftEye ? vrState->m_D9LeftEyeSurface : vrState->m_D9RightEyeSurface;
+        auto &holder = eye == VR::Texture_LeftEye ? vrState->m_VKLeftEye : vrState->m_VKRightEye;
+        D3D9_TEXTURE_VR_DESC desc{};
+        if (SUCCEEDED(g_D3DVR9->GetVRDesc(pRenderTarget, &desc))) {
+          if (surface != pRenderTarget) {
+            pRenderTarget->AddRef();
+            if (surface) surface->Release();
+            surface = pRenderTarget;
+            PortalVrLog("Refreshed eye=%d surface=%p image=%llu", eye, surface, desc.Image);
+          }
+          static_assert(sizeof(desc) == sizeof(holder.m_VulkanData));
+          memcpy(&holder.m_VulkanData, &desc, sizeof(desc));
+          holder.m_VRTexture = { &holder.m_VulkanData, vr::TextureType_Vulkan, vr::ColorSpace_Auto };
+        }
+        vrState->m_BindingEyeTexture = VR::Texture_None;
+      }
+    }
+
     if (RenderTargetIndex == 0) {
       auto rtSize = rt->GetSurfaceExtent();
 
@@ -1683,13 +1705,10 @@ namespace dxvk {
 
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetViewport(const D3DVIEWPORT9* pViewport) {
     
-     // TODO: Overriding the viewport in-game will mess up the shadows, so only do it in the menu for now.
-    if (g_Game && !g_Game->m_EngineClient->IsInGame())
-    {
-        D3DVIEWPORT9 *newViewport = const_cast<D3DVIEWPORT9 *>(pViewport);
-        newViewport->Width = g_Game->m_VR->m_RenderWidth;
-        newViewport->Height = g_Game->m_VR->m_RenderHeight;
-    }
+    // Source owns the viewport. In particular, menu rendering starts before
+    // the engine and VR interfaces are available. Never mutate caller memory.
+    if (!pViewport)
+      return D3DERR_INVALIDCALL;
       
     D3D9DeviceLock lock = LockDevice();
 
@@ -3547,17 +3566,47 @@ namespace dxvk {
     pDirtyRegion,
     dwFlags);
 
-    if (g_Game && g_Game->m_VR && g_Game->m_VR->m_CreatedVRTextures) {
+    // Opt-in render diagnostics; no GPU readback during normal play.
+    static const bool dumpEyeTextures = strstr(GetCommandLineA(), "-portalvr-debug-textures") != nullptr;
+    static unsigned dumpFrame = 0;
+    if (dumpEyeTextures && (++dumpFrame == 160 || dumpFrame == 900 || dumpFrame == 1800) && g_Game && g_Game->m_VR) {
+      auto dumpSurface = [&](IDirect3DSurface9 *source, const char *name) {
+        if (!source) return;
+        D3DSURFACE_DESC desc{}; source->GetDesc(&desc);
+        IDirect3DSurface9 *copy = nullptr;
+        if (FAILED(CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &copy, nullptr))) return;
+        if (SUCCEEDED(GetRenderTargetData(source, copy))) {
+          D3DLOCKED_RECT data{};
+          if (SUCCEEDED(copy->LockRect(&data, nullptr, D3DLOCK_READONLY))) {
+            BITMAPFILEHEADER header{}; BITMAPINFOHEADER info{};
+            header.bfType=0x4d42; header.bfOffBits=sizeof(header)+sizeof(info);
+            header.bfSize=header.bfOffBits+desc.Width*desc.Height*4;
+            info.biSize=sizeof(info); info.biWidth=desc.Width; info.biHeight=-LONG(desc.Height);
+            info.biPlanes=1; info.biBitCount=32; info.biCompression=BI_RGB;
+            FILE *file=nullptr; fopen_s(&file,name,"wb");
+            if(file) { fwrite(&header,sizeof(header),1,file); fwrite(&info,sizeof(info),1,file);
+              for(UINT y=0;y<desc.Height;y++) fwrite(static_cast<char *>(data.pBits)+y*data.Pitch,desc.Width*4,1,file);
+              fclose(file); }
+            copy->UnlockRect();
+          }
+        }
+        copy->Release();
+      };
+      dumpSurface(g_Game->m_VR->m_D9LeftEyeSurface,"portalvr-left.bmp");
+      dumpSurface(g_Game->m_VR->m_D9RightEyeSurface,"portalvr-right.bmp");
+      IDirect3DSurface9 *back=nullptr; GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back);
+      dumpSurface(back,"portalvr-desktop.bmp"); if(back) back->Release();
+    }
+    if (g_Game && g_Game->m_VR && g_Game->m_VR->m_CreatedVRTextures
+        && g_Game->m_VR->m_D9LeftEyeSurface && g_Game->m_VR->m_D9RightEyeSurface) {
       ResolveImage(GetCommonTexture(g_Game->m_VR->m_D9LeftEyeSurface));
       ResolveImage(GetCommonTexture(g_Game->m_VR->m_D9RightEyeSurface));
     }
 	  
-	g_D3DVR9->WaitDeviceIdle();
+    if (g_D3DVR9 && g_Game && g_Game->m_VR && g_Game->m_VR->m_IsInitialized)
+      g_D3DVR9->WaitDeviceIdle();
     
-    if (g_Game && g_Game->m_VR)
-    {
-        g_Game->m_VR->Update();
-    }
+    UpdatePortalVr();
 	  
 	return result;
   }

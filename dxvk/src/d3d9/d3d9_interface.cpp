@@ -241,25 +241,12 @@ namespace dxvk {
           D3DPRESENT_PARAMETERS* pPresentationParameters,
           IDirect3DDevice9**     ppReturnedDeviceInterface) {
     
-	vr::HmdError error = vr::VRInitError_None;
-    vr::IVRSystem* system = vr::VR_Init(&error, vr::VRApplication_Scene);
+    if (!pPresentationParameters || !ppReturnedDeviceInterface)
+      return D3DERR_INVALIDCALL;
+    *ppReturnedDeviceInterface = nullptr;
+    // OpenVR is initialized by the mod after Source and the device are ready.
+    // Failure to find a headset must not terminate Direct3D device creation.
 
-    if (error == vr::VRInitError_None) 
-    {
-        // Override viewport size
-        uint32_t renderWidth, renderHeight;
-        system->GetRecommendedRenderTargetSize(&renderWidth, &renderHeight);
-        pPresentationParameters->BackBufferWidth = renderWidth;
-        pPresentationParameters->BackBufferHeight = renderHeight;
-    }
-    else
-    {
-        char errorString[256];
-        snprintf(errorString, 256, "VR_Init failed: %s", vr::VR_GetVRInitErrorAsEnglishDescription(error));
-        MessageBox(0, errorString, "DXVK", MB_ICONERROR | MB_OK);
-        ExitProcess(0);
-    }
-	
 	auto result = this->CreateDeviceEx(
         Adapter,
         DeviceType,
@@ -269,7 +256,8 @@ namespace dxvk {
         nullptr, // <-- pFullscreenDisplayMode
         reinterpret_cast<IDirect3DDevice9Ex**>(ppReturnedDeviceInterface));
 	  
-	Direct3DCreateVRImpl(*ppReturnedDeviceInterface, &g_D3DVR9);
+    if (SUCCEEDED(result) && *ppReturnedDeviceInterface)
+      Direct3DCreateVRImpl(*ppReturnedDeviceInterface, &g_D3DVR9);
 	  
 	return result;
   }

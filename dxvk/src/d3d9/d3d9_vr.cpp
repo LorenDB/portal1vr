@@ -122,24 +122,23 @@ namespace dxvk {
 
         HRESULT STDMETHODCALLTYPE GetBackBufferData(SharedTextureHolder* backBufferData)
         {
-            IDirect3DSurface9 *backBufferSurface;
-
+            if (!backBufferData)
+                return D3DERR_INVALIDCALL;
+            IDirect3DSurface9 *backBufferSurface = nullptr;
             HRESULT res = m_device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBufferSurface);
-
-            vr::VRVulkanTextureData_t vulkanData;
-            memset(&vulkanData, 0, sizeof(vr::VRVulkanTextureData_t));
-
-            SharedTextureHolder *textureTarget;
-            D3D9_TEXTURE_VR_DESC textureDesc;
-            
-            GetVRDesc(backBufferSurface, &textureDesc);
-            
-            memcpy(&backBufferData->m_VulkanData, &textureDesc, sizeof(vr::VRVulkanTextureData_t));
+            if (FAILED(res) || !backBufferSurface)
+                return FAILED(res) ? res : D3DERR_INVALIDCALL;
+            D3D9_TEXTURE_VR_DESC textureDesc{};
+            res = GetVRDesc(backBufferSurface, &textureDesc);
+            backBufferSurface->Release();
+            if (FAILED(res))
+                return res;
+            static_assert(sizeof(textureDesc) == sizeof(vr::VRVulkanTextureData_t));
+            memcpy(&backBufferData->m_VulkanData, &textureDesc, sizeof(textureDesc));
             backBufferData->m_VRTexture.handle = &backBufferData->m_VulkanData;
             backBufferData->m_VRTexture.eColorSpace = vr::ColorSpace_Auto;
             backBufferData->m_VRTexture.eType = vr::TextureType_Vulkan;
-        
-            return res;
+            return D3D_OK;
         }
 
     private:

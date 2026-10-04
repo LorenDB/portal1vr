@@ -77,12 +77,14 @@
 #define D3DPRESENT_FORCEIMMEDIATE              0x00000100L
 #endif
 
-// MinGW headers are broken. Who'dve guessed?
+// Older MinGW headers omitted this type. Current mingw-w64 defines it.
 #ifndef _MSC_VER
+#ifndef __MINGW32__
 typedef struct _D3DDEVINFO_RESOURCEMANAGER
 {
   char dummy;
 } D3DDEVINFO_RESOURCEMANAGER, * LPD3DDEVINFO_RESOURCEMANAGER;
+#endif
 
 #ifndef __WINE__
 extern "C" WINUSERAPI WINBOOL WINAPI SetProcessDPIAware(VOID);
