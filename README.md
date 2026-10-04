@@ -32,6 +32,8 @@ The installer appends missing settings from the shipped config while preserving 
 
 ## Runtime fixes
 
+- Freeze the scripted GameUI menu camera into a standing viewpoint inside the menu environment (main menu background map or pause menu) instead of riding its path outside the room. The anchor keeps the camera's horizontal position with the height snapped to a standing eye above the floor below it (punched through roof layers), and roomscale offsets plus head collision are solved from it like gameplay. `MenuSpawnX/Y/Z` is a fallback viewpoint used only when no floor is found; `(0,0,0)` disables it. Recentering re-anchors an open menu.
+- Present the menu as a VR panel anchored to the recentered playspace at eye height, a short reach away, instead of a distant flatscreen window. The flat panel stays in the environment while the menu is open; recentering moves it with the playspace. `MenuPanelDistance=0.7` and `MenuPanelWidth=1.0` tune its placement in meters. Laser-pointer and menu-button input are unchanged.
 - Keep the blue/orange gun light at its tracked attachment position after Portal's flat-screen glow calculation. Native color, size, material, and world-model effects are retained.
 - Preserve the complete camera transform when Portal renders the eye through a linked portal during a crossing. Roomscale and stereo offsets are applied in player space, then the camera, first-person models, and attachments are transformed together. The new crossing correction needs headset confirmation.
 - Start VR on the render thread after the engine and D3D device are ready. SteamVR initialization failures can retry without crashing normal rendering.

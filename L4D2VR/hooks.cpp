@@ -901,6 +901,22 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	// stereo offsets in player space, then map the complete camera and models.
 	Vector position = portalCamera.Unmap(setup.origin);
 
+	// While a GameUI menu is open (main menu over the background map, or the
+	// in-game pause menu) the engine drives a scripted menu camera that can
+	// pan outside the room geometry. Freeze a standing anchor inside the
+	// environment instead, then solve roomscale and head collision from it
+	// exactly like gameplay. The desktop mirror below keeps the scripted view.
+	const bool menuFrame = m_Game->IsCursorVisible();
+	if (menuFrame)
+	{
+		if (m_VR->UpdateMenuAnchor(position))
+			position = m_VR->MenuAnchorPosition();
+	}
+	else
+	{
+		m_VR->ClearMenuAnchor();
+	}
+
 	m_VR->m_SetupOrigin = position;
 	m_VR->UpdateCameraCollision(position);
 

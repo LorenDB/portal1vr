@@ -639,52 +639,53 @@ void VR::GetPoseData(vr::TrackedDevicePose_t &poseRaw, TrackedDevicePoseData &po
 
 void VR::RepositionOverlays()
 {
-    vr::TrackedDevicePose_t hmdPose = m_Poses[vr::k_unTrackedDeviceIndex_Hmd];
-    vr::HmdMatrix34_t hmdMat = hmdPose.mDeviceToAbsoluteTracking;
-    Vector hmdPosition = { hmdMat.m[0][3], hmdMat.m[1][3], hmdMat.m[2][3] };
+    if (!m_Overlay || m_MainMenuHandle == vr::k_ulOverlayHandleInvalid)
+        return;
+    if (!vr::VRCompositor())
+        return;
+
+    const vr::TrackedDevicePose_t& hmdPose = m_Poses[vr::k_unTrackedDeviceIndex_Hmd];
+    if (!hmdPose.bPoseIsValid)
+        return;
+    const vr::HmdMatrix34_t& hmdMat = hmdPose.mDeviceToAbsoluteTracking;
+
+    // Present the menu as a VR panel anchored to the recentered playspace, at
+    // eye height a short reach in front of the user, instead of a distant
+    // flatscreen window. The panel stays in the environment (it does not
+    // follow the face); recentering moves it with the playspace.
+    // m_Center is tracked in meters in Source axes; convert back to the
+    // overlay's native tracking axes (x right, y up, z back).
+    const Vector centerSrc = m_CenterPending ? m_HmdPose.TrackedDevicePos : m_Center;
+    Vector anchor(-centerSrc.y, centerSrc.z, -centerSrc.x);
+
     Vector hmdForward = { -hmdMat.m[0][2], 0, -hmdMat.m[2][2] };
+    hmdForward[1] = 0;
+    if (VectorNormalize(hmdForward) < 1e-3f)
+        return; // Gaze is vertical; keep the previous panel placement.
 
-    int windowWidth, windowHeight;
-    GetOverlayWindowSize(*this, windowWidth, windowHeight);
+    const float distance = std::isfinite(m_MenuPanelDistance)
+        ? std::clamp(m_MenuPanelDistance, 0.3f, 2.0f) : 0.7f;
+    const float width = std::isfinite(m_MenuPanelWidth)
+        ? std::clamp(m_MenuPanelWidth, 0.3f, 3.0f) : 1.0f;
 
-    vr::HmdMatrix34_t menuTransform = 
+    Vector panelPos = anchor + hmdForward * distance;
+    panelPos.y = anchor.y - 0.12f;
+
+    const float hmdRotation = atan2f(hmdMat.m[0][2], hmdMat.m[2][2]);
+    const float cosYaw = cosf(hmdRotation);
+    const float sinYaw = sinf(hmdRotation);
+    vr::HmdMatrix34_t menuTransform =
     {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 1.0f,
-        0.0f, 0.0f, 1.0f, 1.0f
+        cosYaw, 0.0f, sinYaw, panelPos.x,
+        0.0f, 1.0f, 0.0f, panelPos.y,
+        -sinYaw, 0.0f, cosYaw, panelPos.z
     };
 
     vr::ETrackingUniverseOrigin trackingOrigin = vr::VRCompositor()->GetTrackingSpace();
-
-    // Reposition main menu overlay
-    float renderWidth = m_VKBackBuffer.m_VulkanData.m_nWidth;
-    float renderHeight = m_VKBackBuffer.m_VulkanData.m_nHeight;
-
-    float widthRatio = windowWidth / renderWidth;
-    float heightRatio = windowHeight / renderHeight;
-    menuTransform.m[0][0] *= widthRatio;
-    menuTransform.m[1][1] *= heightRatio;
-
-    hmdForward[1] = 0;
-    VectorNormalize(hmdForward);
-
-    Vector menuDistance = hmdForward * 3;
-    Vector menuNewPos = menuDistance + hmdPosition;
-
-    menuTransform.m[0][3] = menuNewPos.x;
-    menuTransform.m[1][3] = menuNewPos.y - 0.25;
-    menuTransform.m[2][3] = menuNewPos.z;
-
-    float xScale = menuTransform.m[0][0];
-    float hmdRotationDegrees = atan2f(hmdMat.m[0][2], hmdMat.m[2][2]);
-
-    menuTransform.m[0][0] *= cos(hmdRotationDegrees);
-    menuTransform.m[0][2] = sin(hmdRotationDegrees);
-    menuTransform.m[2][0] = -sin(hmdRotationDegrees) * xScale;
-    menuTransform.m[2][2] *= cos(hmdRotationDegrees);
-
     vr::VROverlay()->SetOverlayTransformAbsolute(m_MainMenuHandle, trackingOrigin, &menuTransform);
-    vr::VROverlay()->SetOverlayWidthInMeters(m_MainMenuHandle, 1.5 * (1.0 / heightRatio));
+    vr::VROverlay()->SetOverlayWidthInMeters(m_MainMenuHandle, width);
+    // A close panel reads best flat; curvature belongs to distant screens.
+    vr::VROverlay()->SetOverlayCurvature(m_MainMenuHandle, 0.0f);
 
     // Reposition HUD overlay
     /*vr::HmdMatrix34_t hudTransform =
@@ -1462,6 +1463,13 @@ void VR::ResetPosition()
     m_CalibrationDrift.Reset();
     m_CalibrationStability.Reset();
     m_CalibrationSuppressUntil = GetTickCount64()+10000;
+    // A recenter also re-anchors an open menu: the environment viewpoint is
+    // recomputed from the current scripted camera and the panel follows the
+    // playspace to its new room location.
+    m_MenuReanchorRequested = true;
+    if (m_Overlay && m_MainMenuHandle != vr::k_ulOverlayHandleInvalid
+        && m_Overlay->IsOverlayVisible(m_MainMenuHandle))
+        RepositionOverlays();
 }
 
 void VR::UpdatePhysicalCrouch()
@@ -1971,6 +1979,71 @@ void VR::UpdateCameraCollision(Vector setupOrigin)
     m_CameraBlocked = blocked;
 }
 
+bool VR::UpdateMenuAnchor(const Vector& scriptedOrigin)
+{
+    if (m_MenuAnchorValid && !m_MenuReanchorRequested)
+        return true;
+    m_MenuReanchorRequested = false;
+
+    // Refuse to anchor from a degenerate camera; keep the previous anchor, or
+    // the scripted origin when no anchor exists yet.
+    if (!std::isfinite(scriptedOrigin.x) || !std::isfinite(scriptedOrigin.y) || !std::isfinite(scriptedOrigin.z))
+        return m_MenuAnchorValid;
+
+    // Freeze the scripted menu camera into a standing viewpoint: keep its
+    // horizontal position and snap the height to a standing eye above the
+    // floor below it. This needs no player entity, so it also covers menus
+    // without a local player. A configured spawn is the fallback when no
+    // floor is found (camera over the void or embedded in solid); it never
+    // hijacks a working viewpoint such as the in-game pause menu. Falls back
+    // to the raw scripted origin when neither is available.
+    const bool spawnConfigured = std::isfinite(m_MenuSpawn.x) && std::isfinite(m_MenuSpawn.y) && std::isfinite(m_MenuSpawn.z)
+        && m_MenuSpawn.LengthSqr() > 0.0001f;
+    Vector anchor = scriptedOrigin;
+    const char* source = "scripted";
+    bool floorFound = false;
+    IEngineTrace* engineTrace = m_Game ? m_Game->GetEngineTrace() : nullptr;
+    if (engineTrace)
+    {
+        // Walk down through roof layers: an aerial menu camera first hits the
+        // room's roof (surface facing down), not the floor. Step below each
+        // such layer and keep looking for an upward-facing walkable surface.
+        constexpr unsigned mask = CONTENTS_SOLID | CONTENTS_WINDOW | CONTENTS_GRATE | CONTENTS_MOVEABLE;
+        Vector probe = anchor;
+        for (int layer = 0; layer < 6 && !floorFound; ++layer)
+        {
+            Ray_t ray{};
+            ray.Init(probe, probe - Vector(0, 0, 512.0f));
+            CGameTrace trace{};
+            CTraceFilterSkipEntity filter(nullptr, 0);
+            engineTrace->TraceRay(ray, mask, &filter, &trace);
+            if (trace.fraction <= 0.0f || trace.fraction >= 1.0f || trace.startsolid || trace.allsolid)
+                break; // Void below, or embedded in solid: no floor this way.
+            if (trace.plane.normal.z > 0.7f)
+            {
+                anchor.z = trace.endpos.z + 64.0f;
+                source = "floor-snap";
+                floorFound = true;
+            }
+            else
+            {
+                probe = trace.endpos - Vector(0, 0, 128.0f);
+            }
+        }
+    }
+    if (!floorFound && spawnConfigured)
+    {
+        anchor = m_MenuSpawn;
+        source = "config";
+    }
+    m_MenuAnchor = anchor;
+    m_MenuAnchorValid = true;
+    PortalVrLog("VR menu anchor=%f,%f,%f source=%s scripted=%f,%f,%f",
+        m_MenuAnchor.x, m_MenuAnchor.y, m_MenuAnchor.z, source,
+        scriptedOrigin.x, scriptedOrigin.y, scriptedOrigin.z);
+    return true;
+}
+
 Vector VR::GetViewOriginLeft(Vector setupOrigin)
 {
     Vector viewOriginLeft = GetViewOrigin(setupOrigin);
@@ -2345,6 +2418,12 @@ void VR::ParseConfigFile()
         ? std::clamp(m_FirstPersonBodyBackOffset, 0.0f, 24.0f) : 8.0f;
     parseOrDefault("AntiAliasing", m_AntiAliasing, 0);
     parseOrDefault("RenderWindow", m_RenderWindow, 0);
+    // Menu-environment viewpoint and VR panel. MenuSpawn (0,0,0) disables
+    // the fallback: the automatic anchor is the scripted camera's horizontal
+    // position with the height snapped to a standing eye above the floor.
+    parseXYZOrDefaultZero("MenuSpawn", m_MenuSpawn);
+    parseOrDefault("MenuPanelDistance", m_MenuPanelDistance, 0.7f);
+    parseOrDefault("MenuPanelWidth", m_MenuPanelWidth, 1.0f);
     parseXYZOrDefaultZero("ViewmodelPosCustomOffset", m_ViewmodelPosCustomOffset);
     parseXYZOrDefaultZero("ViewmodelAngCustomOffset", m_ViewmodelAngCustomOffset);
 }
