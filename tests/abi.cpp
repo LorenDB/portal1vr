@@ -18,7 +18,7 @@
 static void CheckGunAttachments() {
     unsigned char mdl[248+92]{};
     auto put=[&](int offset,int value){std::memcpy(mdl+offset,&value,4);};
-    put(4,48); put(156,45); put(240,1); put(244,248); put(256,25);
+    put(4,46); put(156,45); put(240,1); put(244,248); put(256,25);
     std::memcpy(mdl+12,"weapons/v_portalgun.mdl",sizeof("weapons/v_portalgun.mdl"));
     const auto local=PortalPose::Frame({0,2.2f,2.8f},{0,0,0});
     std::memcpy(mdl+260,&local,sizeof(local));
@@ -35,7 +35,7 @@ static void CheckGunAttachments() {
         for(int i=0;i<45;++i)native[i]=HandPose::Concat(engine,bind[i]);
         native[25]=HandPose::Concat(native[25],PortalPose::Frame({0,0,-1},{2,0,0}));
         const auto controller=PortalPose::Frame({-20,30,60},angle);
-        const auto renderedGun=HandPose::Reanchor(HandPose::FitGunToPalm(bind[24]),source,controller);
+        const auto renderedGun=HandPose::Reanchor(bind[24],source,controller);
         const auto renderedBone=HandPose::Reanchor(native[25],native[24],renderedGun);
         const auto expected=HandPose::Concat(renderedBone,local);
         const auto before=native[25];matrix3x4_t first,second;
@@ -51,7 +51,8 @@ static void CheckGunAttachments() {
     assert(!model.Read(mdl,sizeof(mdl)-1,bind));
     put(256,45);assert(!model.Read(mdl,sizeof(mdl),bind));
     put(256,25);put(244,2147483647);assert(!model.Read(mdl,sizeof(mdl),bind));
-    put(244,248);mdl[12]='X';assert(!model.Read(mdl,sizeof(mdl),bind));
+    put(244,248);put(4,49);assert(!model.Read(mdl,sizeof(mdl),bind));
+    put(4,46);mdl[12]='X';assert(!model.Read(mdl,sizeof(mdl),bind));
 }
 
 static void CheckCameraCollision() {
@@ -129,27 +130,20 @@ static void CheckHandAttachment() {
     assert(!memcmp(&rightMoved[27],&target,sizeof(target)));
     assert(!memcmp(&leftMoved[8],&target,sizeof(target)));
 
-    // Controller hand frames preserve the custom V_hands wrist frame while
-    // mirroring the lateral axis for the opposite hand.
+    // Valve's mirrored hand bones share one controller frame: fingers
+    // forward, palm (-Y) down, and +Z toward the controller's right.
     const auto rightFrame = HandPose::ControllerHandFrame(
-        {1,0,0}, {0,-1,0}, {0,0,1}, {2,3,4}, false);
+        {1,0,0}, {0,-1,0}, {0,0,1}, {2,3,4});
     const auto leftFrame = HandPose::ControllerHandFrame(
-        {1,0,0}, {0,-1,0}, {0,0,1}, {5,6,7}, true);
-    assert(rightFrame[0][0] == 1 && rightFrame[1][1] == 1 && rightFrame[2][2] == 1);
-    assert(leftFrame[0][0] == 1 && leftFrame[1][1] == -1 && leftFrame[2][2] == -1);
+        {1,0,0}, {0,-1,0}, {0,0,1}, {5,6,7});
+    assert(rightFrame[0][0] == 1 && rightFrame[2][1] == 1 && rightFrame[1][2] == -1);
+    for (int r=0;r<3;++r) for (int c=0;c<3;++c) assert(rightFrame[r][c] == leftFrame[r][c]);
     assert(rightFrame[0][3] == 2 && leftFrame[1][3] == 6);
     assert(!FirstPersonBody::LookingDown(0));
     assert(!FirstPersonBody::LookingDown(-45));
     assert(!FirstPersonBody::LookingDown(29));
     assert(FirstPersonBody::LookingDown(45));
     assert(FirstPersonBody::LookingDown(90));
-
-    // Custom VPK fingers extend along +X and hinge around local +Y, so curl
-    // must rotate in the local X/Z plane toward the palm.
-    const auto curlFrame = HandPose::FingerBend(0.5f);
-    assert(fabs(curlFrame[0][1]) < 0.0001f && fabs(curlFrame[2][1]) < 0.0001f);
-    assert(fabs(curlFrame[1][1] - 1.0f) < 0.0001f);
-    assert(curlFrame[0][2] > 0.1f && curlFrame[2][0] < -0.1f);
 
     // The arbitrary-axis path must preserve its hinge axis.  This catches a
     // column/row transpose that would make a valid thumb axis bend sideways.
@@ -188,35 +182,13 @@ static void CheckHandAttachment() {
             assert(fabs(distance.LengthSqr()-1)<0.0001f);
         }
     }
-    assert(posed[19][2][3]>0.5f && posed[38][2][3]<-0.5f);
+    // Both hands close toward the palm, which is local -Y on Valve's bones.
+    assert(posed[19][1][3]<bind[19][1][3]-0.5f && posed[38][1][3]<bind[38][1][3]-0.5f);
     const float invalid[5]={NAN,0,0,0,0};
     memcpy(posed,bind,sizeof(bind));
     HandPose::ApplyFingerCurl(bind,posed,invalid,invalid);
     for(int i=0;i<43;++i)for(int r=0;r<3;++r)for(int c=0;c<4;++c)
         assert(std::isfinite(posed[i][r][c]));
-
-    // A resting gun grip must keep contact, while the trigger changes only
-    // the index chain. Neither input can displace the wrist or gun mechanism.
-    matrix3x4_t gunBind[45], resting[45], triggered[45];
-    for (int i=0;i<45;++i) gunBind[i] = bind[i < 43 ? i : 0];
-    memcpy(resting,gunBind,sizeof(gunBind));
-    memcpy(triggered,gunBind,sizeof(gunBind));
-    HandPose::ApplyGunGrip(gunBind,resting,open);
-    const float triggerOnly[5]={0,1,0,0,0};
-    HandPose::ApplyGunGrip(gunBind,triggered,triggerOnly);
-    assert(fabs(resting[16][2][3]-gunBind[16][2][3]) > 0.1f);
-    assert(fabs(triggered[19][2][3]-resting[19][2][3]) > 0.01f);
-    for (int i=0;i<45;++i) {
-        if (i < 18 || i > 20) assert(!memcmp(&resting[i],&triggered[i],sizeof(matrix3x4_t)));
-        if (i >= 24) assert(!memcmp(&resting[i],&gunBind[i],sizeof(matrix3x4_t)));
-    }
-    for(int r=0;r<3;++r) assert(fabsf(resting[8][r][3]-gunBind[8][r][3])<.001f);
-    float beforeLength=0, afterLength=0;
-    for(int r=0;r<3;++r) {
-        beforeLength+=powf(gunBind[8][r][3]-gunBind[7][r][3],2);
-        afterLength+=powf(resting[8][r][3]-resting[7][r][3],2);
-    }
-    assert(fabsf(beforeLength-afterLength)<.001f);
 
     matrix3x4_t gun[45];
     for (auto &bone:gun) bone = source;
@@ -400,30 +372,23 @@ static void CheckOptionalGunGrip() {
     assert(!OptionalGunGrip::Squeeze(false,true,mid,false));
     assert(OptionalGunGrip::Squeeze(false,true,mid,true));
     assert(!OptionalGunGrip::Squeeze(false,true,open,true));
-    unsigned char mdl[512]{};
-    auto put=[&](int off,int value){memcpy(mdl+off,&value,4);};
-    put(4,48); put(156,45); put(240,1); put(244,256);
-    put(256,92); put(264,24); memcpy(mdl+348,"lefthand_grip",13);
-    const auto expected=HandPose::Frame({-1,0,0},{0,0,1},{0,1,0},{3,-2,10});
-    memcpy(mdl+268,&expected,sizeof(expected));
-    matrix3x4_t socket;
-    assert(OptionalGunGrip::ReadSocket(mdl,sizeof(mdl),socket));
-    assert(!memcmp(&socket,&expected,sizeof(socket)));
-    assert(!OptionalGunGrip::ReadSocket(mdl,347,socket));
-    put(256,2147483647); assert(!OptionalGunGrip::ReadSocket(mdl,sizeof(mdl),socket));
-    put(256,92); put(264,8); assert(!OptionalGunGrip::ReadSocket(mdl,sizeof(mdl),socket));
-    put(264,24); put(240,-1); assert(!OptionalGunGrip::ReadSocket(mdl,sizeof(mdl),socket));
+    // The built-in socket is a proper rigid frame below and ahead of the wrist.
+    const auto expected=OptionalGunGrip::Socket();
+    assert(OptionalGunGrip::Finite(expected));
+    for(int a=0;a<3;++a) for(int b=0;b<3;++b) {
+        float dot=0;for(int r=0;r<3;++r) dot+=expected[r][a]*expected[r][b];
+        assert(fabsf(dot-(a==b?1.f:0.f))<.001f);
+    }
+    assert(expected[0][0]*(expected[1][1]*expected[2][2]-expected[1][2]*expected[2][1])
+        -expected[0][1]*(expected[1][0]*expected[2][2]-expected[1][2]*expected[2][0])
+        +expected[0][2]*(expected[1][0]*expected[2][1]-expected[1][1]*expected[2][0])>.999f);
+    assert(expected[1][3]<0 && expected[2][3]>8);
     // Cached controller-relative sockets must follow both translation and rotation.
     const auto controller=HandPose::Frame({0,1,0},{-1,0,0},{0,0,1},{100,200,300});
     const auto world=HandPose::Concat(controller,expected);
     const auto restored=HandPose::Concat(HandPose::InverseRigid(controller),world);
     for(int r=0;r<3;++r) for(int c=0;c<4;++c) assert(fabsf(restored[r][c]-expected[r][c])<.001f);
-    const auto fitted = HandPose::FitGunToPalm(controller);
-    const auto fitLocal = HandPose::Concat(HandPose::InverseRigid(controller), fitted);
-    assert(fabsf(fitLocal[0][3]-.218f)<.001f && fabsf(fitLocal[1][3]+7.66f)<.001f);
-    assert(fabsf(fitLocal[2][3]+3.3f)<.001f);
-    for(int r=0;r<3;++r) for(int c=0;c<3;++c) assert(fabsf(fitted[r][c]-1.2f*controller[r][c])<.001f);
-    const auto supportWorld = HandPose::Concat(fitted, expected);
+    const auto supportWorld = world;
     const auto support = HandPose::RigidOrientation(supportWorld);
     for(int r=0;r<3;++r) assert(support[r][3]==supportWorld[r][3]);
     for(int c=0;c<3;++c) {

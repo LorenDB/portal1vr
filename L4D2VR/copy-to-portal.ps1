@@ -187,56 +187,29 @@ if (Test-Path -LiteralPath $materialSource) {
     Write-Host "Installed corrected arm materials"
 }
 
-$customVpkSource = Join-Path $PSScriptRoot "custom\bowman_portal1.vpk"
-$customVpkArchive = Join-Path $PSScriptRoot "custom\bowman_portal1.zip"
-$customVpkDestination = Join-Path $portalDir "portal\custom\bowman_portal1.vpk"
-$customVpkInstalled = $false
-if (Test-Path -LiteralPath $customVpkArchive) {
-    # Store the losslessly compressed model in Git; Source still loads a VPK.
-    # Extract only the expected file so archive paths cannot escape custom/.
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $modelArchive = [IO.Compression.ZipFile]::OpenRead($customVpkArchive)
-    try {
-        if ($modelArchive.Entries.Count -ne 1 -or $modelArchive.Entries[0].FullName -ne 'bowman_portal1.vpk') {
-            throw 'The Bowman model archive must contain only bowman_portal1.vpk.'
-        }
-        New-Item -ItemType Directory -Force -Path (Split-Path $customVpkDestination) | Out-Null
-        [IO.Compression.ZipFileExtensions]::ExtractToFile($modelArchive.Entries[0], $customVpkDestination, $true)
-    } finally {
-        $modelArchive.Dispose()
+# Portal's own hands, portal gun, player body and radio song are used. Earlier
+# releases installed replacements; move them and their caches outside custom/
+# so Source falls back to the stock content.
+$customRoot = [IO.Path]::GetFullPath((Join-Path $portalDir 'portal\custom'))
+$retiredFiles = @(
+    'bowman_portal1.vpk',
+    'bowman_portal1.vpk.sound.cache',
+    'portal1vr\sound\ambient\music\looping_radio_mix.wav',
+    'portal1vr\portal1vr_streamer_warning.txt',
+    'portal1vr\sound\sound.cache'
+)
+$backupRoot = Join-Path $portalDir ('bin\VR\InstallBackups\replaced-content-' +
+    [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fffffff'))
+foreach ($relativePath in $retiredFiles) {
+    $oldFile = [IO.Path]::GetFullPath((Join-Path $customRoot $relativePath))
+    if (-not $oldFile.StartsWith($customRoot + [IO.Path]::DirectorySeparatorChar,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Retired content path escaped the custom directory.'
     }
-    $customVpkInstalled = $true
-    Write-Host "Installed custom viewmodel and playermodel VPK"
-} elseif (Test-Path -LiteralPath $customVpkSource) {
-    New-Item -ItemType Directory -Force -Path (Split-Path $customVpkDestination) | Out-Null
-    Copy-Item -LiteralPath $customVpkSource -Destination $customVpkDestination -Force
-    $customVpkInstalled = $true
-    Write-Host "Installed custom viewmodel and playermodel VPK"
-}
-
-if ($customVpkInstalled) {
-    # Older radio installers left a loose WAV that can mask the bundled song.
-    # Keep those files outside custom/ so Source loads only the new VPK copy.
-    $customRoot = [IO.Path]::GetFullPath((Join-Path $portalDir 'portal\custom'))
-    $retiredRadioFiles = @(
-        'portal1vr\sound\ambient\music\looping_radio_mix.wav',
-        'portal1vr\portal1vr_streamer_warning.txt',
-        'portal1vr\sound\sound.cache',
-        'bowman_portal1.vpk.sound.cache'
-    )
-    $radioBackupRoot = Join-Path $portalDir ('bin\VR\InstallBackups\radio-' +
-        [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fffffff'))
-    foreach ($relativePath in $retiredRadioFiles) {
-        $oldFile = [IO.Path]::GetFullPath((Join-Path $customRoot $relativePath))
-        if (-not $oldFile.StartsWith($customRoot + [IO.Path]::DirectorySeparatorChar,
-                [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'Radio migration path escaped the custom directory.'
-        }
-        if (Test-Path -LiteralPath $oldFile -PathType Leaf) {
-            $backupFile = Join-Path $radioBackupRoot $relativePath
-            New-Item -ItemType Directory -Force -Path (Split-Path $backupFile) | Out-Null
-            Move-Item -LiteralPath $oldFile -Destination $backupFile
-            Write-Host "Backed up obsolete radio override/cache: $backupFile"
-        }
+    if (Test-Path -LiteralPath $oldFile -PathType Leaf) {
+        $backupFile = Join-Path $backupRoot $relativePath
+        New-Item -ItemType Directory -Force -Path (Split-Path $backupFile) | Out-Null
+        Move-Item -LiteralPath $oldFile -Destination $backupFile
+        Write-Host "Backed up replaced model/radio content: $backupFile"
     }
 }

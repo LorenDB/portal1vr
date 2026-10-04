@@ -18,7 +18,9 @@ struct Model {
         hasBarrel = false;
         if (!hdr || !reference || size < 248) return false;
         auto integer = [&](size_t offset) { int v; std::memcpy(&v,hdr+offset,4); return v; };
-        if (integer(4) != 48 || integer(156) != 45
+        // Portal ships this model as studio v46; attachment records are
+        // 92 bytes from v44 through v48.
+        if (integer(4) < 44 || integer(4) > 48 || integer(156) != 45
             || std::memcmp(hdr+12,"weapons/v_portalgun.mdl",sizeof("weapons/v_portalgun.mdl"))) return false;
         const int n = integer(240), offset = integer(244);
         if (n < 1 || n > 256 || offset < 248 || size_t(offset) > size
@@ -38,8 +40,7 @@ struct Model {
         }
         auto source = reference[24];
         for (int r=0;r<3;++r) source[r][3] = reference[8][r][3];
-        gunFromController = HandPose::Concat(HandPose::InverseRigid(source),
-            HandPose::FitGunToPalm(reference[24]));
+        gunFromController = HandPose::Concat(HandPose::InverseRigid(source), reference[24]);
         if (muzzle >= 0) {
             const auto& a = attachments[muzzle];
             const auto barrelLocal = HandPose::Concat(HandPose::InverseRigid(reference[24]),

@@ -11,7 +11,7 @@
 #include "portalshotfx.h"
 #include "optionalgungrip.h"
 
-// Optional regression using the actual compiled custom v_portalgun.mdl.
+// Optional regression using Portal's installed v_portalgun.mdl.
 int main(int argc,char **argv) {
     if(argc!=2)return 2;
     std::ifstream file(argv[1],std::ios::binary);
@@ -26,12 +26,9 @@ int main(int argc,char **argv) {
         bind[i]=HandPose::InverseRigid(inverse);
     }
     GunAttachments::Model model;assert(model.Read(data.data(),data.size(),bind));
-    assert(model.count==18);
+    assert(model.count==17);
     assert(model.hasBarrel);
-    matrix3x4_t support;
-    assert(OptionalGunGrip::ReadSocket(data.data(),data.size(),support));
-    assert(fabsf(support[0][3]-2.5f)<.001f && fabsf(support[1][3]+3.2f)<.001f
-        && fabsf(support[2][3]-15.3f)<.001f);
+    const auto support=OptionalGunGrip::Socket();
     auto source=bind[24];for(int r=0;r<3;++r)source[r][3]=bind[8][r][3];
     float maxError=0,maxRayError=0,maxPickupError=0,maxOldEffectError=0;
     int cases=0,rangeCases=0,pickupCases=0,effectCases=0;
@@ -43,7 +40,7 @@ int main(int argc,char **argv) {
         native[25]=HandPose::Concat(native[25],PortalPose::Frame({0,0,-.8f},{3,0,0}));
         Vector forward,right,up;QAngle::AngleVectors({pitch,yaw,roll},&forward,&right,&up);
         const auto controller=HandPose::Frame(-right,up,forward,{-30,10,60});
-        const auto gun=HandPose::Reanchor(HandPose::FitGunToPalm(bind[24]),source,controller);
+        const auto gun=HandPose::Reanchor(bind[24],source,controller);
         const auto supportLocal=HandPose::Concat(model.gunFromController,support);
         const auto supportWorld=HandPose::RigidOrientation(HandPose::Concat(controller,supportLocal));
         const auto drawnSupport=HandPose::RigidOrientation(HandPose::Concat(gun,support));

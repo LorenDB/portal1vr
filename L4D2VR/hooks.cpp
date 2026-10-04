@@ -324,9 +324,9 @@ namespace
 		if (!_strnicmp(name, "models/", 7))
 			name += 7;
 
-		// This intentionally accepts any player model, including the custom
-		// Chell model supplied by the VPK.  It does not replace or rewrite the
-		// model; it only identifies the local player's normal draw call.
+		// This intentionally accepts any player model, stock or custom.  It
+		// does not replace or rewrite the model; it only identifies the local
+		// player's normal draw call.
 		return !_strnicmp(name, "player/", 7);
 	}
 
@@ -1256,7 +1256,7 @@ void __fastcall Hooks::dCalcViewModelView(void *ecx, void *edx, const Vector &ey
 						const char *name = model && m_Game->GetModelInfo() ? m_Game->GetModelInfo()->GetModelName(model) : nullptr;
 						if (!name || _stricmp(name, "models/weapons/v_hands.mdl"))
 							reinterpret_cast<SetWeaponModelFn>(setModel)(vm, "models/weapons/v_hands.mdl", nullptr);
-						// Keep custom hands independent of the world-player skeleton.
+						// Keep the hands independent of the world-player skeleton.
 						// Reference-pose rendering also avoids the legacy idle animation.
 						reinterpret_cast<RemoveEffectsFn>(removeEffects)(vm, 1 | 32);
 					}
@@ -1470,7 +1470,7 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
                 const Vector rightPosition = m_VR->GetRightHandAbsPos();
                 const auto rightTarget = HandPose::ControllerHandFrame(
                     m_VR->m_RightHandForward, m_VR->m_RightControllerRight,
-                    m_VR->m_RightHandUp, rightPosition, false);
+                    m_VR->m_RightHandUp, rightPosition);
                 if (gun) {
                     // The gun's local +Z is its barrel, +Y is up. Align its
                     // grip with the controller and retain animated gun parts.
@@ -1478,11 +1478,10 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
                     for (int row = 0; row < 3; ++row) source[row][3] = reference[8][row][3];
                     const auto target = HandPose::Frame(-m_VR->m_RightControllerRight,
                         m_VR->m_RightControllerUp, m_VR->m_RightControllerForward, rightPosition);
-                    // The gun model now contains an anatomical wrist frame
-                    // fitted to Portal's authored grip, independently of bare hands.
+                    // The arm keeps Portal's authored grip inside the rear
+                    // housing, independently of bare hands.
                     for (int i = 0; i < 24; ++i) tracked[i] = HandPose::Reanchor(reference[i], source, target);
-                    const auto fittedGun = HandPose::FitGunToPalm(reference[24]);
-                    const auto gunTarget = HandPose::Reanchor(fittedGun, source, target);
+                    const auto gunTarget = HandPose::Reanchor(reference[24], source, target);
                     if (info.pRenderable == s_RightViewmodelRenderable) {
                         s_GunAttachmentRenderable = nullptr;
                         m_VR->m_PortalAimLastSeen = 0;
@@ -1517,25 +1516,16 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
                             s_NativeGunBasisError=std::fmax(s_NativeGunBasisError,fabsf(dot-(r==c?1.f:0.f)));
                         }
                     }
-                    HandPose::ApplyGunGrip(reference, tracked, m_VR->m_RightFingerCurl);
-                    matrix3x4_t socket;
-                    if (modelLength >= 248 && modelLength <= 64 * 1024 * 1024
-                        && SigScanner::IsReadable(reinterpret_cast<uintptr_t>(hdr), modelLength)
-                        && OptionalGunGrip::ReadSocket(hdr, modelLength, socket)) {
-                        // Keep the socket relative to the gun controller, so
-                        // either eye and either draw order use today's tracking.
-                        m_VR->m_SupportFromController = HandPose::Concat(HandPose::InverseRigid(source),
-                            HandPose::Concat(fittedGun, socket));
-                        m_VR->m_SupportLastSeen = GetTickCount64();
-                    } else {
-                        m_VR->m_SupportLastSeen = 0;
-                        m_VR->m_OptionalGripState.active = false;
-                        m_VR->m_OptionalSupportActive = false;
-                    }
+                    HandPose::StraightenGunWrist(tracked);
+                    // Keep the socket relative to the gun controller, so
+                    // either eye and either draw order use today's tracking.
+                    m_VR->m_SupportFromController = HandPose::Concat(HandPose::InverseRigid(source),
+                        HandPose::Concat(reference[24], OptionalGunGrip::Socket()));
+                    m_VR->m_SupportLastSeen = GetTickCount64();
                 } else {
                     auto leftTarget = HandPose::ControllerHandFrame(
                         m_VR->m_LeftHandForward, m_VR->m_LeftControllerRight,
-                        m_VR->m_LeftHandUp, m_VR->GetLeftHandAbsPos(), true);
+                        m_VR->m_LeftHandUp, m_VR->GetLeftHandAbsPos());
                     const bool supporting = s_LeftArmRenderable && m_VR->UpdateOptionalGunSupport(&leftTarget);
                     HandPose::AlignBareArms(reference, tracked, leftTarget, rightTarget);
                     static const float supportCurl[5] = {0.30f, 0.40f, 0.45f, 0.45f, 0.45f};
