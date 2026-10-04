@@ -98,13 +98,31 @@ public:
 	Vector m_Center = { 0,0,0 };
 	bool m_CenterPending = true;
 	bool m_AutoCalibration = true;
-	AutoCalibration::Origin m_CalibrationOrigin;
-	AutoCalibration::Drift m_CalibrationDrift;
-	AutoCalibration::Stability m_CalibrationStability;
-	bool m_CalibrationTracked = false;
-	std::uint64_t m_CalibrationTime = 0, m_CalibrationSuppressUntil = 0, m_LastCarryUpdate = 0;
-	Vector m_CalibrationPlayerPosition = {0,0,0};
-	void UpdateAutoCalibration();
+ 	AutoCalibration::Origin m_CalibrationOrigin;
+ 	AutoCalibration::Drift m_CalibrationDrift;
+ 	AutoCalibration::Stability m_CalibrationStability;
+ 	bool m_CalibrationTracked = false;
+ 	std::uint64_t m_CalibrationTime = 0, m_CalibrationSuppressUntil = 0, m_LastCarryUpdate = 0;
+ 	Vector m_CalibrationPlayerPosition = {0,0,0};
+ 	void UpdateAutoCalibration();
+	// Menu-environment viewpoint. While a GameUI menu is open (main menu over
+	// the background map, or the in-game pause menu) the engine drives a
+	// scripted camera that can pan outside the room geometry. VR instead
+	// freezes a standing anchor inside the environment: horizontal position
+	// from the scripted camera, height snapped to a standing eye above the
+	// floor below it (punched through roof layers), or the configured spawn
+	// when no floor is found.
+	// Roomscale offsets and head collision are solved from the anchor like
+	// gameplay.
+	Vector m_MenuAnchor = { 0, 0, 0 };
+	bool m_MenuAnchorValid = false;
+	bool m_MenuReanchorRequested = true;
+	Vector m_MenuSpawn = { 0, 0, 0 }; // Source units; (0,0,0) disables the fallback.
+	float m_MenuPanelDistance = 0.7f; // Menu overlay meters in front of the recenter point.
+	float m_MenuPanelWidth = 1.0f;    // Menu overlay meters wide.
+	bool UpdateMenuAnchor(const Vector& scriptedOrigin);
+	void ClearMenuAnchor() { m_MenuAnchorValid = false; }
+	const Vector& MenuAnchorPosition() const { return m_MenuAnchor; }
 	Vector m_SetupOrigin = { 0,0,0 };
 	Vector m_CameraCollisionOffset = { 0,0,0 };
 	bool m_CameraBlocked = false;
