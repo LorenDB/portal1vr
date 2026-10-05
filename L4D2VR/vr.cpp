@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <vector>
 #include "../dxvk/src/d3d9/d3d9_vr.h"
 #include "debuglog.h"
 #include "cameracollision.h"
@@ -26,6 +27,8 @@
 #include "gunray.h"
 #include "pickuptrace.h"
 #include "vrsettings.h"
+#include "roomscale.h"
+#include "aimmarker.h"
 
 namespace
 {
@@ -185,6 +188,7 @@ VR::VR(Game *game)
             };
             m_Overlay->SetOverlayCurvature(m_MainMenuHandle, 0.15f);
             m_Overlay->SetOverlayMouseScale(m_MainMenuHandle, &mouseScaleMenu);
+            CreateAimMarker();
         }
     }
     else
@@ -264,6 +268,11 @@ int VR::SetActionManifest(const char *fileName)
 		m_ActionPoseLeft = 0;
 	if (m_Input->GetActionHandle("/actions/base/in/pose_righthand", &m_ActionPoseRight) != vr::VRInputError_None)
 		m_ActionPoseRight = 0;
+	// Haptic outputs are optional: a saved custom binding may not include them.
+	if (m_Input->GetActionHandle("/actions/base/out/vibration_left", &m_ActionHapticLeft) != vr::VRInputError_None)
+		m_ActionHapticLeft = 0;
+	if (m_Input->GetActionHandle("/actions/base/out/vibration_right", &m_ActionHapticRight) != vr::VRInputError_None)
+		m_ActionHapticRight = 0;
 	// Stable per-hand identifiers for pose restriction and future per-hand
 	// queries. Failures are non-fatal: the legacy role path remains.
 	if (m_Input->GetInputSourceHandle("/user/hand/left", &m_InputSourceLeft) != vr::VRInputError_None)
@@ -390,6 +399,20 @@ void VR::Update()
 
     wasInGame = inGame;
 
+    // Held-object haptics: the grab controller stops reporting once the prop
+    // is released. The server does not tick behind a menu, so hold the timer.
+    if (m_Carrying)
+    {
+        const auto now = GetTickCount64();
+        if (cursorVisible || !inGame)
+            m_LastCarryUpdate = now;
+        else if (now - m_LastCarryUpdate > 400)
+        {
+            m_Carrying = false;
+            TriggerHaptic(Hand::Gun, 0.03f, 50.0f, 0.35f);
+        }
+    }
+
     SubmitVRTextures();
     if (!loggedAfterSubmit)
     {
@@ -507,16 +530,50 @@ void VR::SubmitVRTextures()
             m_Overlay->HideOverlay(m_MainMenuHandle);
     }
 
-    auto left = compositor->Submit(vr::Eye_Left,
-        eyeFrame ? &m_VKLeftEye.m_VRTexture : &m_VKBackBuffer.m_VRTexture,
-        eyeFrame ? &m_TextureBounds[0] : nullptr);
-    auto right = compositor->Submit(vr::Eye_Right,
-        eyeFrame ? &m_VKRightEye.m_VRTexture : &m_VKBackBuffer.m_VRTexture,
-        eyeFrame ? &m_TextureBounds[1] : nullptr);
+    // A frame without a rendered world (loading screen, startup, a menu with
+    // no map behind it) is already on the menu panel. Submitting the flat
+    // backbuffer to the eyes as well stretched it across the whole view,
+    // locked to the face. Fade the scene out to a black compositor background
+    // instead, so only the panel is visible until the world is back.
+    constexpr float sceneFadeSeconds = 0.25f;
+    const auto now = GetTickCount64();
+    vr::EVRCompositorError left = vr::VRCompositorError_None;
+    vr::EVRCompositorError right = vr::VRCompositorError_None;
+    if (eyeFrame)
+    {
+        m_FramesWithoutScene = 0;
+        if (m_SceneHidden)
+        {
+            compositor->FadeGrid(sceneFadeSeconds, false);
+            m_SceneHidden = false;
+            // The background stays black until the fade back has finished.
+            m_SceneBackgroundRestoreAt = now + 1000;
+        }
+        else if (m_SceneBackgroundRestoreAt && now >= m_SceneBackgroundRestoreAt)
+        {
+            compositor->FadeToColor(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, true);
+            m_SceneBackgroundRestoreAt = 0;
+        }
+        left = compositor->Submit(vr::Eye_Left, &m_VKLeftEye.m_VRTexture, &m_TextureBounds[0]);
+        right = compositor->Submit(vr::Eye_Right, &m_VKRightEye.m_VRTexture, &m_TextureBounds[1]);
+    }
+    // One skipped world frame is not worth a fade: the compositor reprojects
+    // the last one.
+    else if (!m_SceneHidden && ++m_FramesWithoutScene >= 3)
+    {
+        compositor->FadeToColor(0.0f, 0.0f, 0.0f, 0.0f, 1.0f, true);
+        compositor->FadeGrid(sceneFadeSeconds, true);
+        m_SceneHidden = true;
+        m_SceneBackgroundRestoreAt = 0;
+    }
+    UpdateAimMarker(eyeFrame);
+
     static int lastLeft = -1, lastRight = -1;
     static unsigned frames = 0;
     static bool lastEyeFrame = false;
-    if ((++frames % 600) == 0 || lastEyeFrame != eyeFrame || lastLeft != left || lastRight != right)
+    // State changes are always logged; the periodic snapshot is opt-in.
+    const bool periodic = (++frames % 600) == 0 && PortalVrDebugLogging();
+    if (periodic || lastEyeFrame != eyeFrame || lastLeft != left || lastRight != right)
     {
         PortalVrLog("VR frame=%u eyes=%d submitLeft=%d submitRight=%d inGame=%d hmdTracked=%d cursor=%d", frames, eyeFrame, left, right,
             m_Game->IsInGame(), m_Poses[vr::k_unTrackedDeviceIndex_Hmd].bPoseIsValid, m_Game->IsCursorVisible());
@@ -649,14 +706,13 @@ void VR::RepositionOverlays()
         return;
     const vr::HmdMatrix34_t& hmdMat = hmdPose.mDeviceToAbsoluteTracking;
 
-    // Present the menu as a VR panel anchored to the recentered playspace, at
-    // eye height a short reach in front of the user, instead of a distant
-    // flatscreen window. The panel stays in the environment (it does not
-    // follow the face); recentering moves it with the playspace.
-    // m_Center is tracked in meters in Source axes; convert back to the
-    // overlay's native tracking axes (x right, y up, z back).
-    const Vector centerSrc = m_CenterPending ? m_HmdPose.TrackedDevicePos : m_Center;
-    Vector anchor(-centerSrc.y, centerSrc.z, -centerSrc.x);
+    // Present the menu as a VR panel at eye height a short reach in front of
+    // the user, instead of a distant flatscreen window. It is placed from
+    // where the head is when the menu opens and then stays in the environment
+    // (it does not follow the face); recentering places it again. Anchoring
+    // to the recenter point instead put the panel behind or beside anyone who
+    // had walked away from that point.
+    Vector anchor(hmdMat.m[0][3], hmdMat.m[1][3], hmdMat.m[2][3]);
 
     Vector hmdForward = { -hmdMat.m[0][2], 0, -hmdMat.m[2][2] };
     hmdForward[1] = 0;
@@ -709,6 +765,182 @@ void VR::RepositionOverlays()
 
     vr::VROverlay()->SetOverlayTransformAbsolute(m_HUDHandle, trackingOrigin, &hudTransform);
     vr::VROverlay()->SetOverlayWidthInMeters(m_HUDHandle, m_HudSize);*/
+}
+
+void VR::CreateAimMarker()
+{
+    if (m_Overlay->CreateOverlay("Portal1VRAimMarkerKey", "Portal1VRAimMarker", &m_AimMarkerHandle) != vr::VROverlayError_None)
+    {
+        m_AimMarkerHandle = vr::k_ulOverlayHandleInvalid;
+        PortalVrLog("Aim marker overlay unavailable");
+        return;
+    }
+    static std::uint8_t pixels[AimMarker::TextureSize * AimMarker::TextureSize * 4];
+    AimMarker::Paint(pixels);
+    const auto error = m_Overlay->SetOverlayRaw(m_AimMarkerHandle, pixels,
+        AimMarker::TextureSize, AimMarker::TextureSize, 4);
+    PortalVrLog("Aim marker overlay created texture=%d", error);
+}
+
+void VR::UpdateAimMarker(bool eyeFrame)
+{
+    if (!m_Overlay || m_AimMarkerHandle == vr::k_ulOverlayHandleInvalid)
+        return;
+
+    // m_PortalAimLastSeen is set while the portal gun is the equipped
+    // viewmodel, so bare hands in the first chambers get no marker.
+    bool show = m_AimMode == 2 && eyeFrame && !m_EyeViewThroughPortal
+        && m_PortalAimLastSeen != 0 && m_HmdPose.isValid && m_RightControllerPose.isValid
+        && m_Game->IsInGame() && !m_Game->IsCursorVisible();
+    vr::HmdMatrix34_t transform{};
+    float width = 0.0f;
+    Vector aimOrigin, aimDirection;
+    if (show && GetPortalAimRay(aimOrigin, aimDirection))
+    {
+        // m_AimPos is this frame's trace along the same ray. A trace that ran
+        // its full length hit nothing, so there is no surface to mark.
+        const float range = sqrtf((m_AimPos - aimOrigin).LengthSqr());
+        show = std::isfinite(range) && range > 1.0f && range < MAX_TRACE_LENGTH * 0.99f;
+    }
+    else
+        show = false;
+    if (show)
+    {
+        // Where the rendered eyes are, in both spaces: the head pose moved
+        // along its own Z by the eye offset, and the matching view origin.
+        const vr::HmdMatrix34_t& hmd = m_Poses[vr::k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking;
+        const Vector eyeTracking(hmd.m[0][3] + hmd.m[0][2] * m_EyeZ,
+            hmd.m[1][3] + hmd.m[1][2] * m_EyeZ, hmd.m[2][3] + hmd.m[2][2] * m_EyeZ);
+        Vector eyeWorld = GetViewOrigin(m_SetupOrigin);
+        eyeWorld.z += PhysicalDuckViewCompensation(m_SetupOrigin);
+        Vector marker;
+        show = AimMarker::WorldToTracking(m_AimPos, eyeWorld, eyeTracking,
+            m_RotationOffset.y, m_VRScale, marker);
+        const Vector toMarker = marker - eyeTracking;
+        const float distance = show ? sqrtf(toMarker.LengthSqr()) : 0.0f;
+        show = show && distance > 0.05f;
+        if (show)
+        {
+            // Face the head, and keep a constant apparent size at any range.
+            const Vector placed = eyeTracking + toMarker * AimMarker::DepthBias;
+            transform = hmd;
+            transform.m[0][3] = placed.x;
+            transform.m[1][3] = placed.y;
+            transform.m[2][3] = placed.z;
+            width = std::max(AimMarker::MinimumWidth, distance * AimMarker::WidthPerMeter);
+        }
+    }
+
+    if (show)
+    {
+        m_Overlay->SetOverlayTransformAbsolute(m_AimMarkerHandle,
+            vr::VRCompositor()->GetTrackingSpace(), &transform);
+        m_Overlay->SetOverlayWidthInMeters(m_AimMarkerHandle, width);
+    }
+    if (show != m_AimMarkerVisible)
+    {
+        if (show)
+            m_Overlay->ShowOverlay(m_AimMarkerHandle);
+        else
+            m_Overlay->HideOverlay(m_AimMarkerHandle);
+        m_AimMarkerVisible = show;
+    }
+}
+
+void VR::TriggerHaptic(vr::VRActionHandle_t action, float seconds, float frequency, float amplitude)
+{
+    if (action && m_Input && m_IsVREnabled)
+        m_Input->TriggerHapticVibrationAction(action, 0.0f, seconds, frequency, amplitude,
+            vr::k_ulInvalidInputValueHandle);
+}
+
+void VR::TriggerHaptic(Hand hand, float seconds, float frequency, float amplitude)
+{
+    const bool physicalLeft = (hand == Hand::Gun) == m_LeftHanded;
+    TriggerHaptic(physicalLeft ? m_ActionHapticLeft : m_ActionHapticRight, seconds, frequency, amplitude);
+}
+
+void VR::NoteCarryUpdate()
+{
+    if (!m_Carrying)
+    {
+        m_Carrying = true;
+        TriggerHaptic(Hand::Gun, 0.06f, 70.0f, 0.6f);
+    }
+    m_LastCarryUpdate = GetTickCount64();
+}
+
+static double RoomscaleSeconds()
+{
+    // Not GetTickCount64: its resolution can be coarser than a frame, and a
+    // frame that appears to take no time cannot be measured.
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+Vector VR::RoomscaleOffset() const
+{
+    // Horizontal head position relative to the body, in world units.
+    Vector offset = m_HmdPose.TrackedDevicePos - m_Center;
+    offset.z = 0;
+    VectorPivotXY(offset, { 0, 0, 0 }, m_RotationOffset.y);
+    return offset * m_VRScale;
+}
+
+bool VR::RoomscaleGroundAt(const Vector& offset)
+{
+    auto* player = m_Game->GetLocalPortalPlayer();
+    if (!player)
+        return false;
+
+    // Probe below the spot the body would walk to. Open air there is a ledge:
+    // the head may lean out over it, but only the stick walks off it.
+    const Vector start(m_SetupOrigin.x + offset.x, m_SetupOrigin.y + offset.y, m_SetupOrigin.z);
+    const float half = Roomscale::GroundProbeHalfWidth;
+    Ray_t ray{};
+    ray.Init(start, start - Vector(0, 0, Roomscale::GroundProbeDepth),
+        Vector(-half, -half, -1.0f), Vector(half, half, 1.0f));
+    CGameTrace trace;
+    trace.fraction = 1.0f;
+    trace.startsolid = trace.allsolid = false;
+    CTraceFilterSkipEntity filter(reinterpret_cast<IHandleEntity*>(player), 0);
+    constexpr unsigned mask = CONTENTS_SOLID | CONTENTS_WINDOW | CONTENTS_GRATE | CONTENTS_MOVEABLE;
+    if (!m_Game->TraceRay(ray, mask, &filter, &trace))
+        return true;
+    // Starting inside something is a wall, which the engine blocks by itself.
+    return trace.startsolid || trace.allsolid || trace.fraction < 1.0f;
+}
+
+bool VR::RoomscaleMove(bool stickWalking, float& forwardMove, float& sideMove)
+{
+    forwardMove = sideMove = 0.0f;
+    Vector wish;
+    if (!m_RoomscaleFollow.Command(RoomscaleSeconds(), RoomscaleOffset(), m_SetupOrigin,
+            stickWalking, IsCrouchHeld(),
+            [this](const Vector& offset) { return RoomscaleGroundAt(offset); }, wish))
+        return false;
+    return Roomscale::WishToMoves(wish, m_HmdForward, m_HmdRight, forwardMove, sideMove);
+}
+
+void VR::UpdateRoomscaleFollow()
+{
+    // Only while playing: an open menu substitutes its own viewpoint for the
+    // player's eye, and without 6DOF the camera does not leave the body.
+    const bool usable = m_Roomscale && m_6DOF && m_IsVREnabled && m_HmdPose.isValid
+        && !m_CenterPending && !m_MenuAnchorValid
+        && m_Game->IsInGame() && !m_Game->IsCursorVisible();
+    const bool wasBlocked = m_RoomscaleFollow.blocked;
+    Vector covered = m_RoomscaleFollow.Credit(RoomscaleSeconds(), usable, m_SetupOrigin, RoomscaleOffset());
+    if (m_RoomscaleFollow.blocked && !wasBlocked)
+        PortalVrLog("Roomscale follow blocked: the body cannot reach the head");
+    if (covered.LengthSqr() <= 0.0f)
+        return;
+
+    // Move the recenter point toward the headset by the distance the body
+    // covered: the head offset shrinks by exactly what the body gained, so
+    // the camera stays where the head is.
+    covered *= 1.0f / m_VRScale;
+    VectorPivotXY(covered, { 0, 0, 0 }, -m_RotationOffset.y);
+    m_Center += covered;
 }
 
 bool VR::GetPoseActionPose(vr::VRActionHandle_t action, vr::TrackedDevicePose_t &poseOut)
@@ -945,6 +1177,10 @@ void VR::ProcessMenuInput()
                     input.type = INPUT_MOUSE;
                     input.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
                     SendInput(1, &input, sizeof(INPUT));
+                    // Confirm the click in the hand that made it.
+                    const bool leftHand = vrEvent.trackedDeviceIndex
+                        == m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand);
+                    TriggerHaptic(leftHand ? m_ActionHapticLeft : m_ActionHapticRight, 0.02f, 120.0f, 0.4f);
                 }
                 break;
 
@@ -1051,8 +1287,12 @@ bool VR::UpdateOptionalGunSupport(matrix3x4_t *target)
         sqrtf((GetLeftHandAbsPos()-position).LengthSqr()), m_LeftHandGunGripRadius);
     if (m_OptionalSupportActive && target) *target = support;
     if (previouslyActive != m_OptionalSupportActive)
+    {
         PortalVrLog("Optional support active=%d socketValid=%d pressed=%d distance=%f",
             m_OptionalSupportActive,fresh,m_LeftGripPressed,sqrtf((GetLeftHandAbsPos()-position).LengthSqr()));
+        if (m_OptionalSupportActive)
+            TriggerHaptic(Hand::Off, 0.04f, 90.0f, 0.5f);
+    }
     return m_OptionalSupportActive;
 }
 
@@ -1691,6 +1931,7 @@ void VR::UpdateTracking()
     UpdateAutoCalibration();
     if (m_CenterPending && m_HmdPose.isValid) ResetPosition();
     UpdatePhysicalCrouch();
+    UpdateRoomscaleFollow();
 
     // HMD tracking
     Vector hmdPosLocal = m_HmdPose.TrackedDevicePos;
@@ -1849,32 +2090,10 @@ void VR::UpdateTracking()
     m_ViewmodelUp = VectorRotate(m_ViewmodelUp, m_ViewmodelForward, m_ViewmodelAngOffset.z);
 
     // Trace only after this frame's controller positions and orientations are ready.
+    // AimMode 2 shows this point through UpdateAimMarker. The ping-pointer
+    // beam Portal 2 drew from here has no counterpart in Portal 1's client:
+    // its three signatures are absent, so that path never ran.
     m_AimPos = Trace((uint32_t*)localPlayer);
-
-    if (m_AimMode == 2 && m_Game->m_Hooks->CreatePingPointer &&
-        m_Game->m_Offsets->SetControlPoint.address && m_Game->m_Offsets->StopEmission.address) {
-        C_Portal_Player* portalPlayer = (C_Portal_Player*)localPlayer;
-
-        auto activeWeaponAddr = (*(int(__thiscall**)(void*))(*(uintptr_t*)portalPlayer + 968))(portalPlayer);
-        //auto activeWeaponAddr = (*(int(__thiscall**)(void*))(*(uintptr_t*)m_Game->m_Offsets->GetActivePortalWeapon.address))(portalPlayer);
-
-        if (activeWeaponAddr && m_DrawCrosshair) {
-            CWeaponPortalBase* activeWeapon = (CWeaponPortalBase*)activeWeaponAddr;
-
-            if (portalPlayer->m_PointLaser) {
-                portalPlayer->m_PointLaser->SetControlPoint(1, m_AimPos);
-                portalPlayer->m_PointLaser->SetControlPoint(2, m_Game->m_singlePlayerPortalColors[activeWeapon->m_iLastFiredPortal] * 0.5f);
-            }
-            else if (m_Game->m_Hooks->CreatePingPointer) {
-                std::cout << "Creating Point Laser Beam Sight Thingy" << "\n";
-                m_Game->m_Hooks->CreatePingPointer(localPlayer, m_AimPos);
-            }
-        }
-        else if (portalPlayer->m_PointLaser){
-            portalPlayer->m_PointLaser->StopEmission(false, true, false);
-            portalPlayer->m_PointLaser = NULL;
-        }
-    }
 }
 
 Vector VR::GetViewAngle()
@@ -2284,11 +2503,12 @@ static void concatErrorMsg(Game& game, const Ts&... args)
 
 // [CONFIG PARSING UTILITY FUNCTION]
 // Attempts to parse an entry with key 'key' from the provided 'userConfig'. If the key is
-// missing or if the parsing fails, 'defaultValue' is returned and an error message is
-// generated.
+// missing or if the parsing fails, 'defaultValue' is returned and a description is
+// appended to 'problems'. This never throws: it runs while VR is starting on
+// the render thread, where an escaping exception ends the game.
 template <typename T>
 static T parseConfigEntry(
-    const std::unordered_map<std::string, std::string>& userConfig, Game& game,
+    const std::unordered_map<std::string, std::string>& userConfig, std::vector<std::string>& problems,
     const char* key, const T& defaultValue)
 try
 {
@@ -2296,8 +2516,9 @@ try
 
     if (itr == userConfig.end())
     {
-        concatErrorMsg(game, "Config entry with key '", key,
-            "' missing -- reverting to default value of '", defaultValue, "'");
+        std::ostringstream problem;
+        problem << key << " is missing (using " << defaultValue << ")";
+        problems.push_back(problem.str());
 
         return defaultValue;
     }
@@ -2330,12 +2551,15 @@ try
         return invalid_type{};
     }
 }
-catch (const std::logic_error& e)
+catch (const std::exception&)
 {
-    concatErrorMsg(game, "Error parsing config entry with key '", key,
-        "' -- reverting to default value of '", defaultValue, "' -- error: (", e.what(), ")");
+    const auto itr = userConfig.find(key);
+    std::ostringstream problem;
+    problem << key << " has an unreadable value '" << (itr != userConfig.end() ? itr->second : std::string())
+        << "' (using " << defaultValue << ")";
+    problems.push_back(problem.str());
 
-    throw;
+    return defaultValue;
 }
 
 void VR::ParseConfigFile()
@@ -2362,15 +2586,21 @@ void VR::ParseConfigFile()
     }
 
     if (userConfig.empty())
+    {
+        PortalVrLog("bin\\VR\\config.txt is missing or empty; using built-in defaults");
         return;
+    }
+
+    // Every missing or unreadable entry, reported together once parsing ends.
+    std::vector<std::string> problems;
 
     // Parse a single entry with key 'key' from the config into 'target'.
     // If the entry does not exist, or if the parsing fails, sets 'target' to
     // 'defaultValue'.
     const auto parseOrDefault = [&](const char* key, auto& target,
-                                    const auto& defaultValue) 
-    { 
-        target = parseConfigEntry(userConfig, *m_Game, key, defaultValue);
+                                    const auto& defaultValue)
+    {
+        target = parseConfigEntry(userConfig, problems, key, defaultValue);
         std::cout << "Setting '" << key << "' to '" << target << "'\n";
     };
 
@@ -2403,6 +2633,8 @@ void VR::ParseConfigFile()
     // Hidden visibility toggle: optional like PhysicalCrouch so older
     // configs load without a modal warning; the installer appends the default.
     if (userConfig.count("ShowHands")) parseOrDefault("ShowHands", m_ShowHands, true);
+    // Roomscale body-follow, optional for the same reason.
+    if (userConfig.count("Roomscale")) parseOrDefault("Roomscale", m_Roomscale, true);
     /*parseOrDefault("HudDistance", m_HudDistance, 1.3f);
     parseOrDefault("HudSize", m_HudSize, 4.0f);
     parseOrDefault("HudAlwaysVisible", m_HudAlwaysVisible, false);*/
@@ -2426,6 +2658,18 @@ void VR::ParseConfigFile()
     parseOrDefault("MenuPanelWidth", m_MenuPanelWidth, 1.0f);
     parseXYZOrDefaultZero("ViewmodelPosCustomOffset", m_ViewmodelPosCustomOffset);
     parseXYZOrDefaultZero("ViewmodelAngCustomOffset", m_ViewmodelAngCustomOffset);
+
+    if (!problems.empty())
+    {
+        std::ostringstream message;
+        message << "bin\\VR\\config.txt: " << problems.size()
+            << (problems.size() == 1 ? " setting was" : " settings were")
+            << " missing or unreadable, so defaults are in use.\n";
+        for (const std::string& problem : problems)
+            message << "\n  " << problem;
+        message << "\n\nRun the installer again to restore missing settings.";
+        m_Game->errorMsg(message.str().c_str());
+    }
 }
 
 void VR::WaitForConfigUpdate()

@@ -72,6 +72,14 @@ buttons and sticks; manual recenter is on the movement-stick click (right stick
 in left-handed mode), or use "VR: recenter headset" in the menu. Saved custom
 SteamVR bindings may need the new left-handed action set configured.
 
+AimMode=2 draws a dot where the portal gun points. Portal shots, pickups,
+the support grip and menu clicks give controller haptics. Roomscale=true
+walks the player body after you when you move around your room, so walls,
+buttons and portals follow you; it waits while the stick is in use and does
+not walk off ledges. Set Roomscale=false to turn it off. Loading screens
+show on the menu panel instead of filling the view. These are new and
+still need headset tests.
+
 AutoCalibration=true preserves position, height and heading after explicit
 SteamVR tracking-origin changes, including slow accumulated changes. It uses
 stable tracking samples and checks for a blocked player-body route with a clear

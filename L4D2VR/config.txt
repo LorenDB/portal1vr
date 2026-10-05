@@ -7,8 +7,9 @@ IPDScale=1.0 # Scale of interpupillary distance
 6DOF=true
 PhysicalCrouch=true # IRL headset drop also ducks; set false for button-only crouch
 PhysicalCrouchDrop=0.25 # Headset drop in meters that starts a crouch (0.1-0.8)
+Roomscale=true # Walking in your room also walks the player body, so collision, buttons and portals follow you; false leaves the body where the stick put it
 AutoCalibration=true # Preserve tracking-origin position/height/heading changes; ease horizontal alignment only with stable tracking and body/head route mismatch
-AimMode=2 # 0 = None, 1 = Crosshair (does not work properly), 2 = Laser sight/beam
+AimMode=2 # 0 = None, 2 = Aim dot on the surface the portal gun points at (1 = stock crosshair, which the headset view does not draw)
 ShowHands=true # Draw hand/arm models; false shows only the portal gun (off-hand grip becomes plain crouch)
 FirstPersonBody=true # Draw the local player body in the VR eye and desktop mirror views
 FirstPersonBodyBackOffset=8 # Move the first-person torso backward in Source units (0-24); restart Portal after changing
@@ -20,7 +21,7 @@ RenderWindow=1 # Whether or not to render the game a third time for the window, 
 MenuSpawnX=0.0 # Menu-environment viewpoint fallback in Source units; used only when the automatic anchor finds no floor below the menu camera (0,0,0 disables)
 MenuSpawnY=0.0
 MenuSpawnZ=0.0
-MenuPanelDistance=0.7 # Menu panel meters in front of the recenter point (0.3-2.0)
+MenuPanelDistance=0.7 # Menu panel meters in front of your head when the menu opens (0.3-2.0)
 MenuPanelWidth=1.0 # Menu panel meters wide (0.3-3.0)
 ViewmodelPosCustomOffsetX=0.0
 ViewmodelPosCustomOffsetY=0.0

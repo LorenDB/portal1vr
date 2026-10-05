@@ -12,6 +12,10 @@
 #include "../dxvk/src/d3d9/d3d9_vr.h"
 #include <Psapi.h>
 #include <atomic>
+#include <mutex>
+#include <set>
+#include <string>
+#include <thread>
 
 namespace
 {
@@ -511,7 +515,23 @@ void *Game::GetModuleOffset(const char *dllname, uintptr_t offset, bool required
 
 void Game::errorMsg(const char *msg)
 {
-    MessageBox(0, msg, "L4D2VR", MB_ICONERROR | MB_OK);
+    // Most callers are on the render thread. A modal dialog there freezes the
+    // game behind a window the headset cannot show, so every report goes to
+    // the log and the dialog runs on its own thread. Each distinct message is
+    // shown once, and the total is capped, so a retry loop cannot stack them.
+    const std::string text = msg ? msg : "";
+    PortalVrLog("ERROR: %s", text.c_str());
+    {
+        static std::mutex mutex;
+        static std::set<std::string> shown;
+        std::lock_guard<std::mutex> lock(mutex);
+        if (shown.size() >= 8 || !shown.insert(text).second)
+            return;
+    }
+    std::thread([text] {
+        MessageBoxA(nullptr, text.c_str(), "Portal 1 VR",
+            MB_ICONERROR | MB_OK | MB_SETFOREGROUND | MB_TOPMOST);
+    }).detach();
 }
 
 CBaseEntity *Game::GetClientEntity(int entityIndex)

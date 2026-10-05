@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include "optionalgungrip.h"
 #include "autocalibration.h"
+#include "roomscale.h"
 
 #define MAX_STR_LEN 256
 
@@ -118,7 +119,7 @@ public:
 	bool m_MenuAnchorValid = false;
 	bool m_MenuReanchorRequested = true;
 	Vector m_MenuSpawn = { 0, 0, 0 }; // Source units; (0,0,0) disables the fallback.
-	float m_MenuPanelDistance = 0.7f; // Menu overlay meters in front of the recenter point.
+	float m_MenuPanelDistance = 0.7f; // Menu overlay meters in front of the head when it opens.
 	float m_MenuPanelWidth = 1.0f;    // Menu overlay meters wide.
 	bool UpdateMenuAnchor(const Vector& scriptedOrigin);
 	void ClearMenuAnchor() { m_MenuAnchorValid = false; }
@@ -128,7 +129,16 @@ public:
 	bool m_CameraBlocked = false;
 
 	float m_HeightOffset = 0.0;
-	bool m_RoomscaleActive = false;
+	// Roomscale body-follow (roomscale.h). The camera already follows the
+	// headset; the player body is steered after it, and the distance the body
+	// covers is handed over from the head offset by moving m_Center, so the
+	// camera does not move a second time.
+	bool m_Roomscale = true;
+	Roomscale::Follow m_RoomscaleFollow;
+	Vector RoomscaleOffset() const;
+	bool RoomscaleGroundAt(const Vector& offset);
+	bool RoomscaleMove(bool stickWalking, float& forwardMove, float& sideMove);
+	void UpdateRoomscaleFollow();
 
 	Vector m_LeftControllerPosRel = { 0, 0, 0 };
 	QAngle m_LeftControllerAngAbs = { 0, 0, 0 };
@@ -170,6 +180,21 @@ public:
 	SharedTextureHolder m_VKBackBuffer;
 	SharedTextureHolder m_VKHUD;
 	SharedTextureHolder m_VKBlankTexture;
+
+	// Frames without a rendered world (loading screens, startup) show only the
+	// menu panel, on a black compositor background.
+	int m_FramesWithoutScene = 0;
+	bool m_SceneHidden = false;
+	std::uint64_t m_SceneBackgroundRestoreAt = 0;
+
+	// AimMode 2: a dot where the gun is aiming, drawn as a SteamVR overlay
+	// (aimmarker.h). Hidden while the eyes render through a portal crossing,
+	// where the plain tracking-to-world mapping does not hold.
+	vr::VROverlayHandle_t m_AimMarkerHandle = vr::k_ulOverlayHandleInvalid;
+	bool m_AimMarkerVisible = false;
+	bool m_EyeViewThroughPortal = false;
+	void CreateAimMarker();
+	void UpdateAimMarker(bool eyeFrame);
 
 	bool m_IsVREnabled = false;
 	bool m_IsInitialized = false;
@@ -224,6 +249,17 @@ public:
 	vr::VRInputValueHandle_t m_InputSourceLeft = 0;
 	vr::VRInputValueHandle_t m_InputSourceRight = 0;
 	bool GetPoseActionPose(vr::VRActionHandle_t action, vr::TrackedDevicePose_t &poseOut);
+	// Haptic outputs (declared in /actions/base). The actions are bound to
+	// physical hands; Hand follows LeftHanded, like the pose actions.
+	vr::VRActionHandle_t m_ActionHapticLeft = 0;
+	vr::VRActionHandle_t m_ActionHapticRight = 0;
+	enum class Hand { Gun, Off };
+	void TriggerHaptic(vr::VRActionHandle_t action, float seconds, float frequency, float amplitude);
+	void TriggerHaptic(Hand hand, float seconds, float frequency, float amplitude);
+	// Set while the grab controller keeps reporting a held object, so pickup
+	// and release can each be felt once.
+	bool m_Carrying = false;
+	void NoteCarryUpdate();
 	// A relaxed hand is slightly cupped.  Pico's SteamVR bridge does not expose
 	// a skeleton stream, so these values are also the procedural fallback until
 	// a controller reports real curl data.

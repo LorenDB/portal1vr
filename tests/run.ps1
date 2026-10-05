@@ -19,6 +19,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Portal camera test build failed.' }
 if ($PortalClient) { & (Join-Path $output 'portal-camera.exe') $PortalClient }
 else { & (Join-Path $output 'portal-camera.exe') }
 if ($LASTEXITCODE -ne 0) { throw 'Portal camera tests failed.' }
+& cl.exe /nologo /std:c++17 /EHsc /RTC1 /Od /DWIN32 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS "/I$repository\L4D2VR" "/I$repository\L4D2VR\sdk" (Join-Path $PSScriptRoot 'roomscale-aim-marker.cpp') "/Fe$output\roomscale-aim-marker.exe" "/Fo$output\roomscale-aim-marker.obj"
+if ($LASTEXITCODE -ne 0) { throw 'Roomscale/aim marker test build failed.' }
+& (Join-Path $output 'roomscale-aim-marker.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Roomscale follow, aim marker, or log regressions failed.' }
 if ($PortalClient) {
     & cl.exe /nologo /std:c++17 /EHsc /RTC1 /Od /DWIN32 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS "/I$repository\L4D2VR" "/I$repository\L4D2VR\sdk" (Join-Path $PSScriptRoot 'portal-client-layout.cpp') "/Fe$output\portal-client-layout.exe" "/Fo$output\portal-client-layout.obj"
     if ($LASTEXITCODE -ne 0) { throw 'Portal client layout test build failed.' }

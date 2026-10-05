@@ -897,6 +897,7 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	const auto portalCamera = PortalCamera::Read(m_Game->GetLocalPortalPlayer(),portalTrace,
 		portalCameraSupported && m_VR->m_IsVREnabled);
 	PortalCamera::Scope portalCameraScope(s_PortalCamera,portalCamera);
+	m_VR->m_EyeViewThroughPortal = portalCamera.transformed;
 	// CalcPortalView already transformed the native origin. Add roomscale and
 	// stereo offsets in player space, then map the complete camera and models.
 	Vector position = portalCamera.Unmap(setup.origin);
@@ -922,7 +923,7 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 
 	Vector hmdAngle = m_VR->GetViewAngle();
 	static int renderPoseLogCounter = 0;
-	if ((++renderPoseLogCounter % 120) == 0)
+	if ((++renderPoseLogCounter % 120) == 0 && PortalVrDebugLogging())
 	{
 		PortalVrLog("Render view pose hmd=%f,%f,%f setup=%f,%f,%f",
 			hmdAngle.x, hmdAngle.y, hmdAngle.z,
@@ -1111,7 +1112,9 @@ bool __fastcall Hooks::dCreateMove(void *ecx, void *edx, float flInputSampleTime
 		}
 
 		vr::InputAnalogActionData_t analogActionData;
+		bool stickWalking = false;
 		if (m_VR->GetAnalogActionData(m_VR->m_ActionWalk, analogActionData)) {
+			stickWalking = analogActionData.x * analogActionData.x + analogActionData.y * analogActionData.y > 0.01f;
 			// Run toward other guy
 			cmd->buttons &= ~(IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT);
 
@@ -1141,30 +1144,13 @@ bool __fastcall Hooks::dCreateMove(void *ecx, void *edx, float flInputSampleTime
 
 		}
 
-		if (m_VR->m_RoomscaleActive)
+		// Roomscale: walk the body after the head. VR::UpdateRoomscaleFollow
+		// hands the covered distance over from the head offset each frame.
+		float roomscaleForward = 0.0f, roomscaleSide = 0.0f;
+		if (m_VR->RoomscaleMove(stickWalking, roomscaleForward, roomscaleSide))
 		{
-			// How much have we moved since last CreateMove?
-			Vector setupOriginToHMD = (m_VR->m_HmdPosRelativeRaw - m_VR->m_HmdPosRelativeRawPrev) * m_VR->m_VRScale; //m_VR->m_HmdPosRelative - m_VR->m_HmdPosRelativePrev;
-			m_VR->m_HmdPosRelativeRawPrev = m_VR->m_HmdPosRelativeRaw;
-
-			setupOriginToHMD.z = 0;
-			float distance = VectorLength(setupOriginToHMD);
-			if (distance > 0)
-			{
-				float forwardSpeed = DotProduct2D(setupOriginToHMD, m_VR->m_HmdForward);
-				float sideSpeed = DotProduct2D(setupOriginToHMD, m_VR->m_HmdRight);
-				cmd->forwardmove += distance * forwardSpeed;
-				cmd->sidemove += distance * sideSpeed;
-
-				// Let's update the position and the previous too
-				/*m_VR->m_HmdPosRelative -= setupOriginToHMD;
-				m_VR->m_HmdPosRelativePrev = m_VR->m_HmdPosRelative;*/
-
-				/*m_VR->m_Center += m_VR->m_HmdPosRelativeRaw - m_VR->m_HmdPosRelativeRawPrev;
-				m_VR->m_HmdPosRelativeRawPrev = m_VR->m_HmdPosRelativeRaw;*/
-
-				//m_VR->ResetPosition();
-			}
+			cmd->forwardmove += roomscaleForward;
+			cmd->sidemove += roomscaleSide;
 		}
 	}
 
@@ -1756,8 +1742,11 @@ float __fastcall Hooks::dTraceFirePortal(void* ecx, void* edx, bool secondary,
     }
     const float result = hkTraceFirePortal.fOriginal(ecx, secondary, shotStart, shotDirection, trace,
         finalPosition, finalAngles, placedBy, test);
+    // Recoil for a real shot. Test traces only feed the placement indicator.
+    if (!test && placedBy == 2 && m_VR->m_IsVREnabled)
+        m_VR->TriggerHaptic(VR::Hand::Gun, 0.08f, 90.0f, 0.9f);
     static unsigned diagnosed=0;
-    if (!test && placedBy==2 && diagnosed++<2000 && trace) {
+    if (!test && placedBy==2 && PortalVrDebugLogging() && diagnosed++<2000 && trace) {
         const auto& hit=*static_cast<const CGameTrace*>(trace);
         const auto delta=hit.endpos-shotStart;
         const float along=delta.x*shotDirection.x+delta.y*shotDirection.y+delta.z*shotDirection.z;
@@ -1795,7 +1784,7 @@ void __cdecl Hooks::dDispatchEffect(const char* name,const void* data)
                 QAngle::AngleVectors(before.angles,&originalDirection,nullptr,nullptr);
                 QAngle::AngleVectors(corrected.angles,&direction,nullptr,nullptr);
                 static unsigned reports=0;
-                if (reports++<2000) PortalVrLog("Portal blast aligned color=%u originShift=%f directionChange=%f muzzle=%f,%f,%f target=%f,%f,%f direction=%f,%f,%f",
+                if (PortalVrDebugLogging() && reports++<2000) PortalVrLog("Portal blast aligned color=%u originShift=%f directionChange=%f muzzle=%f,%f,%f target=%f,%f,%f direction=%f,%f,%f",
                     PortalShotFx::Color(corrected),
                     sqrtf((before.origin-corrected.origin).LengthSqr()),sqrtf((originalDirection-direction).LengthSqr()),
                     corrected.origin.x,corrected.origin.y,corrected.origin.z,corrected.start.x,corrected.start.y,corrected.start.z,
@@ -1817,7 +1806,7 @@ void __cdecl Hooks::dPortalBlastCallback(const void* data)
         PortalShotFx::Data effect{};
         memcpy(&effect,data,PortalShotFx::ClientPayloadSize);
         Vector direction;QAngle::AngleVectors(effect.angles,&direction,nullptr,nullptr);
-        if (reports++<2000) PortalVrLog("Portal blast received color=%u muzzle=%f,%f,%f target=%f,%f,%f direction=%f,%f,%f",
+        if (PortalVrDebugLogging() && reports++<2000) PortalVrLog("Portal blast received color=%u muzzle=%f,%f,%f target=%f,%f,%f direction=%f,%f,%f",
             PortalShotFx::Color(effect),effect.origin.x,effect.origin.y,effect.origin.z,
             effect.start.x,effect.start.y,effect.start.z,direction.x,direction.y,direction.z);
         bool restored;
@@ -1827,7 +1816,7 @@ void __cdecl Hooks::dPortalBlastCallback(const void* data)
         }
         if(restored) {
             QAngle::AngleVectors(effect.angles,&direction,nullptr,nullptr);
-            if(reports<=2000) PortalVrLog("Portal blast precision restored color=%u muzzle=%f,%f,%f direction=%f,%f,%f",
+            if(PortalVrDebugLogging() && reports<=2000) PortalVrLog("Portal blast precision restored color=%u muzzle=%f,%f,%f direction=%f,%f,%f",
                 PortalShotFx::Color(effect),effect.origin.x,effect.origin.y,effect.origin.z,
                 direction.x,direction.y,direction.z);
             return hkPortalBlastCallback.fOriginal(&effect);
@@ -1857,6 +1846,7 @@ void __fastcall Hooks::dPlayerPortalled(void* ecx, void* edx, void* portal)
 	m_VR->m_CameraBlocked = false;
 	m_VR->m_CalibrationDrift.Reset();
 	m_VR->m_CalibrationSuppressUntil=GetTickCount64()+2000;
+	m_VR->m_RoomscaleFollow.originValid = false;
 	// Update both hands and the roomscale offset in this callback, before a
 	// render or pickup update can consume an entry-side pose. No distance gate.
 	m_VR->UpdateTracking();
@@ -1891,7 +1881,7 @@ void* __fastcall Hooks::dFindUseEntity(void* ecx, void* edx)
 		entity = hkFindUseEntity.fOriginal(ecx);
 	} else entity = hkFindUseEntity.fOriginal(ecx);
 	static unsigned aimReports=0;
-	if (aligned && aimReports++<256) {
+	if (aligned && PortalVrDebugLogging() && aimReports++<256) {
 		Vector visibleOrigin,visibleDirection;
 		if (m_VR->GetPortalAimRay(visibleOrigin,visibleDirection)) {
 			Vector serverDirection;
@@ -2139,7 +2129,7 @@ bool __fastcall Hooks::dUpdateObject(void* ecx, void* edx, void* pPlayer, float 
 
 	const bool value = hkUpdateObject.fOriginal(ecx, pPlayer, flError);
 	if (value && m_VR->m_IsVREnabled && ServerEntityIndex(pPlayer)==m_Game->GetLocalPlayerIndex())
-		m_VR->m_LastCarryUpdate = GetTickCount64();
+		m_VR->NoteCarryUpdate();
 
 	m_VR->m_OverrideEyeAngles = wasTrue;
 
@@ -2153,7 +2143,7 @@ bool __fastcall Hooks::dUpdateObjectVM(void* ecx, void* edx, void* pPlayer, floa
 
 	bool value = hkUpdateObjectVM.fOriginal(ecx, pPlayer, flError);
 	if (value && m_VR->m_IsVREnabled && ServerEntityIndex(pPlayer)==m_Game->GetLocalPlayerIndex())
-		m_VR->m_LastCarryUpdate = GetTickCount64();
+		m_VR->NoteCarryUpdate();
 
 	if (!wasTrue)
 		m_VR->m_OverrideEyeAngles = false;
