@@ -137,17 +137,41 @@ public:
 	// Roomscale body-follow (roomscale.h). The camera already follows the
 	// headset; the player body is steered after it, and the distance the body
 	// covers is handed over from the head offset by moving m_Center, so the
-	// camera does not move a second time.
+	// camera does not move a second time. RenderView hands it over with the
+	// body position the eyes are drawn from, just before drawing them.
 	bool m_Roomscale = true;
 	Roomscale::Follow m_RoomscaleFollow;
 	Vector RoomscaleOffset() const;
 	bool RoomscaleMove(bool stickWalking, float& forwardMove, float& sideMove);
 	void UpdateRoomscaleFollow();
+	// The opening of the portal the player stands in, in the player's space,
+	// from the last rendered frame (PortalCamera::Frame). A head through it
+	// leads the body into the part of the opening the hull fits through.
+	bool m_FollowOpeningValid = false;
+	Vector m_FollowOpeningCenter = { 0,0,0 };
+	Vector m_FollowOpeningForward = { 1,0,0 };
+	Vector m_FollowOpeningLeft = { 0,1,0 };
 	// A map camera (point_viewcontrol) owns the view; see mapcamera.h.
 	// MapCameraAlign turns each shot to start in front of the player's gaze.
 	MapCamera::State m_MapCamera;
 	bool m_MapCameraAlign = true;
 	void UpdateMapCamera(int viewEntity, int localPlayer, const Vector &cameraOrigin, float cameraYaw);
+	// End credits are a 2D HUD element whose painting plays them (credits.h).
+	// While they roll, RenderView draws the desktop pass with the HUD even
+	// with RenderWindow off, and the flat screen shows that frame.
+	bool m_CreditsRolling = false;
+	// Why the flat screen is up (nullptr: hidden), and whether it is shown opaque.
+	const char *m_FlatScreenReason = nullptr;
+	bool m_FlatScreenOpaque = false;
+	bool m_CreditsFlagsResolved = false;
+	const volatile bool *m_CreditsFlags[2] = {};
+	bool UpdateCreditsRolling();
+	// Every few seconds of play, how many frames the compositor had to
+	// reproject or drop: a headset view that lags the head while walking
+	// with these at zero is the mod's doing, not the frame rate.
+	std::uint64_t m_FramePacingSince = 0;
+	vr::Compositor_CumulativeStats m_FramePacingStats{};
+	void LogFramePacing();
 
 	Vector m_LeftControllerPosRel = { 0, 0, 0 };
 	QAngle m_LeftControllerAngAbs = { 0, 0, 0 };

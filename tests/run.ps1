@@ -38,6 +38,10 @@ if ($PortalClient) {
     if ($LASTEXITCODE -ne 0) { throw 'Portal client layout test build failed.' }
     & (Join-Path $output 'portal-client-layout.exe') $PortalClient
     if ($LASTEXITCODE -ne 0) { throw 'Installed Portal client layout is not supported by the portal-aware trace.' }
+    & cl.exe /nologo /std:c++17 /EHsc /RTC1 /Od /DWIN32 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS "/I$repository\L4D2VR" "/I$repository\L4D2VR\sdk" (Join-Path $PSScriptRoot 'credits-flag.cpp') "/Fe$output\credits-flag.exe" "/Fo$output\credits-flag.obj"
+    if ($LASTEXITCODE -ne 0) { throw 'Credits flag test build failed.' }
+    & (Join-Path $output 'credits-flag.exe') $PortalClient
+    if ($LASTEXITCODE -ne 0) { throw 'Installed Portal client no longer publishes the end-credits flags the VR runtime reads.' }
 }
 if ($PortalGunModel) {
     & cl.exe /nologo /std:c++17 /EHsc /RTC1 /Od /DWIN32 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS "/I$repository\L4D2VR" "/I$repository\L4D2VR\sdk" (Join-Path $PSScriptRoot 'gun-model-attachments.cpp') "/Fe$output\gun-model-attachments.exe" "/Fo$output\gun-model-attachments.obj"

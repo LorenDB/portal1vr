@@ -19,8 +19,8 @@ namespace Roomscale {
     // Approach no faster than friction can stop the body at the head.
     constexpr float BrakingDeceleration = 300.0f;
     constexpr float BrakingMargin = 2.0f;
-    // The body still coasts a little past the head; that much is the
-    // follow's doing too.
+    // The body still coasts a little past the head; that much counts as
+    // progress when judging a stall.
     constexpr float OvershootAllowance = 4.0f;
     // Falling and flinging: leave the trajectory to the engine.
     constexpr float MaxVerticalSpeed = 150.0f;
@@ -33,7 +33,7 @@ namespace Roomscale {
     // The stick moves the body and the camera together. Wait for that
     // momentum to die before following again.
     constexpr float StickHoldSeconds = 0.4f;
-    // Movement is the follow's doing only shortly after it was commanded.
+    // A stall is judged only shortly after a command.
     constexpr float CreditSeconds = 0.15f;
     // With the head already through a portal the body has to come after it:
     // no waiting for the head to get far ahead.
@@ -41,10 +41,131 @@ namespace Roomscale {
     // Larger jumps between frames are teleports, not locomotion.
     constexpr float TeleportDistance = 64.0f;
     constexpr float MaxFrameSeconds = 0.25f;
+    // Source ground movement as Portal runs it (server.dll defaults
+    // sv_friction 4, sv_stopspeed 100, sv_accelerate 10) at 66 ticks a
+    // second. A ducked player's moves are cropped to a third.
+    constexpr float TickSeconds = 0.015f;
+    constexpr float GroundFriction = 4.0f;
+    constexpr float StopSpeed = 100.0f;
+    constexpr float GroundAccelerate = 10.0f;
+    constexpr float DuckedMoveScale = 1.0f / 3.0f;
+    constexpr float PlayerMaxSpeed = 175.0f;
+    // A frame's movement is all the follow's when it lands this close to
+    // what the follow's momentum predicts. The slack covers the client
+    // seeing the body a tick late.
+    constexpr float ExplainedFraction = 0.35f;
+    constexpr float ExplainedSlack = 0.1f;
+    // Otherwise only movement along the momentum is, and at most this
+    // multiple of it: a frame without a tick shows no movement, the next
+    // one more than a frame's worth.
+    constexpr float MaxShareRatio = 2.0f;
+    // Each frame's share in the measured speed of whatever carries the body.
+    constexpr float CarriedBlend = 0.5f;
+    // Units per second between frames that still count as the same speed.
+    constexpr float CarriedSteadiness = 5.0f;
+    // A wall portal opening takes the 32-unit hull with this much to spare.
+    constexpr float BodyHalfWidth = 16.0f;
+    constexpr float OpeningEdgeMargin = 2.0f;
 
     inline float Length2D(const Vector& v) {
         return std::sqrt(v.x * v.x + v.y * v.y);
     }
+
+    // A wall portal takes the body only where the whole hull fits inside its
+    // opening. Steered straight at a head leaning through near an edge, the
+    // body met the wall beside the opening and stayed pinned there. Aim at
+    // the head moved sideways into the part of the opening the hull fits
+    // through instead. 'body' is the body relative to the opening's center,
+    // 'forward' and 'left' the opening's axes.
+    inline Vector IntoOpening(const Vector& offset, const Vector& body, const Vector& forward,
+                              const Vector& left, float openingHalfWidth) {
+        const float leftLength = Length2D(left);
+        if (!(std::fabs(forward.z) < 0.5f) || !(leftLength > 0.5f))
+            return offset;
+        const Vector across(left.x / leftLength, left.y / leftLength, 0.0f);
+        const float head = (body.x + offset.x) * across.x + (body.y + offset.y) * across.y;
+        const float limit = std::max(openingHalfWidth - BodyHalfWidth - OpeningEdgeMargin, 0.0f);
+        const float shift = head - std::clamp(head, -limit, limit);
+        if (!std::isfinite(shift))
+            return offset;
+        return Vector(offset.x - across.x * shift, offset.y - across.y * shift, offset.z);
+    }
+
+    // The velocity the follow's own commands gave the body: Source ground
+    // movement run on those commands alone, one step per movement tick.
+    // Walking a curve leaves the body still moving partly along an earlier
+    // direction. That is the follow's momentum all the same; handing over
+    // only the part along the current direction let the rest carry the
+    // camera off the head, by up to 20 units around a one-metre circle.
+    struct Momentum {
+        // After the latest movement tick, and before it: the client may
+        // still be showing the body a tick behind.
+        Vector velocity = { 0, 0, 0 };
+        Vector previous = { 0, 0, 0 };
+
+        void Reset() { velocity = previous = Vector(0, 0, 0); }
+        bool Idle() const { return velocity.LengthSqr() == 0.0f && previous.LengthSqr() == 0.0f; }
+
+        void Step(const Vector& wish) {
+            previous = velocity;
+            const float speed = Length2D(velocity);
+            if (!(speed > 0.1f))
+                velocity = Vector(0, 0, 0);
+            else {
+                const float scale = std::max(speed - std::max(speed, StopSpeed) * GroundFriction * TickSeconds, 0.0f) / speed;
+                velocity = Vector(velocity.x * scale, velocity.y * scale, 0.0f);
+            }
+            const float wishLength = Length2D(wish);
+            if (!(wishLength > 0.0f) || !std::isfinite(wishLength))
+                return;
+            const float wishSpeed = std::min(wishLength, PlayerMaxSpeed);
+            const Vector unit(wish.x / wishLength, wish.y / wishLength, 0.0f);
+            const float add = wishSpeed - (velocity.x * unit.x + velocity.y * unit.y);
+            if (add > 0.0f) {
+                const float gain = std::min(GroundAccelerate * TickSeconds * wishSpeed, add);
+                velocity = Vector(velocity.x + unit.x * gain, velocity.y + unit.y * gain, 0.0f);
+            }
+        }
+
+        // How far a frame's horizontal movement lands from the predictions
+        // between the two ticks; infinite without a prediction.
+        float Miss(const Vector& moved, float dt) const {
+            const Vector early(previous.x * dt, previous.y * dt, 0.0f);
+            const Vector late(velocity.x * dt, velocity.y * dt, 0.0f);
+            const float length = std::max(Length2D(early), Length2D(late));
+            if (!(length > 0.01f) || !std::isfinite(length) || !std::isfinite(Length2D(moved)))
+                return INFINITY;
+            const Vector span(late.x - early.x, late.y - early.y, 0.0f);
+            const float spanSquared = span.x * span.x + span.y * span.y;
+            const float at = spanSquared > 1e-8f ? std::clamp(((moved.x - early.x) * span.x
+                + (moved.y - early.y) * span.y) / spanSquared, 0.0f, 1.0f) : 0.0f;
+            return Length2D(Vector(moved.x - early.x - span.x * at, moved.y - early.y - span.y * at, 0.0f));
+        }
+
+        // The share of a frame's horizontal movement this momentum explains:
+        // all of it when it lands close to the prediction, otherwise only
+        // its part along the momentum. A push or a moving platform then
+        // still carries the camera with the body.
+        Vector Share(const Vector& moved, float dt) const {
+            const Vector early(previous.x * dt, previous.y * dt, 0.0f);
+            const Vector late(velocity.x * dt, velocity.y * dt, 0.0f);
+            const float length = std::max(Length2D(early), Length2D(late));
+            const Vector actual(moved.x, moved.y, 0.0f);
+            const float miss = Miss(actual, dt);
+            if (!std::isfinite(miss))
+                return Vector(0, 0, 0);
+            if (miss <= ExplainedFraction * length + ExplainedSlack)
+                return actual;
+            const Vector sum(early.x + late.x, early.y + late.y, 0.0f);
+            const float sumLength = Length2D(sum);
+            if (!(sumLength > 0.0f))
+                return Vector(0, 0, 0);
+            const Vector unit(sum.x / sumLength, sum.y / sumLength, 0.0f);
+            const float along = std::clamp(actual.x * unit.x + actual.y * unit.y,
+                0.0f, MaxShareRatio * length + ExplainedSlack);
+            return Vector(unit.x * along, unit.y * along, 0.0f);
+        }
+    };
 
     inline bool ShouldFollow(float distance, bool following) {
         return std::isfinite(distance) && distance >= (following ? StopDistance : StartDistance);
@@ -123,6 +244,19 @@ namespace Roomscale {
         float verticalSpeed = 0.0f;
         double time = 0.0, lastCommand = -1.0e9, stickUntil = -1.0e9, crouchSince = 0.0;
         SlowBoost boost;
+        Momentum momentum;
+        // How fast something else moves the body, in units per second: a
+        // moving platform, measured while the follow has no momentum of
+        // its own and assumed to carry on while the follow walks the body
+        // across it.
+        Vector carried = { 0, 0, 0 };
+        // A platform moves the body steadily; the coast after the stick or a
+        // landing slows down every tick, and is not carrying anything.
+        bool carriedSteady = false;
+
+        bool Ducked(double now) const {
+            return crouching && now - crouchSince >= CrouchSettleSeconds;
+        }
 
         // Once per movement command. 'offset' is the head relative to the
         // body and 'body' the body position, both in world units. Returns
@@ -131,6 +265,22 @@ namespace Roomscale {
         // left standing on a ledge the head had walked off did not fall.
         bool Command(double now, const Vector& offset, const Vector& body, bool stickWalking,
                      bool crouchHeld, Vector& wish) {
+            const bool commanded = Decide(now, offset, body, stickWalking, crouchHeld, wish);
+            // The stick's movement is not the follow's, nor is anything
+            // before the body's position is known.
+            if (!originValid || now < stickUntil)
+                momentum.Reset();
+            else if (!commanded)
+                momentum.Step(Vector(0, 0, 0));
+            else {
+                const float scale = Ducked(now) ? DuckedMoveScale : 1.0f;
+                momentum.Step(Vector(wish.x * scale, wish.y * scale, 0.0f));
+            }
+            return commanded;
+        }
+
+        bool Decide(double now, const Vector& offset, const Vector& body, bool stickWalking,
+                    bool crouchHeld, Vector& wish) {
             if (stickWalking)
                 stickUntil = now + StickHoldSeconds;
             if (!crouchHeld) {
@@ -171,14 +321,22 @@ namespace Roomscale {
             return true;
         }
 
-        // Once per rendered frame. Returns how far the body moved toward the
-        // head because of the follow. The caller takes that same distance out
-        // of the head offset, so the camera does not move a second time.
+        // Once per rendered frame, with the body position the eyes are about
+        // to be drawn from. Returns how far the body moved because of the
+        // follow. The caller takes that same distance out of the head offset
+        // before drawing, so the camera does not move a second time. Taken
+        // out a frame later, the camera ran ahead by the last frame's body
+        // movement whenever the body started or stopped.
         Vector Credit(double now, bool usable, const Vector& body, const Vector& offset) {
             const float dt = static_cast<float>(now - time);
             time = now;
             if (!usable || !originValid || !(dt >= 0.0f) || dt > MaxFrameSeconds) {
                 previousBody = body;
+                if (!usable || !originValid) {
+                    momentum.Reset();
+                    carried = Vector(0, 0, 0);
+                    carriedSteady = false;
+                }
                 originValid = usable;
                 verticalSpeed = 0.0f;
                 stall = 0.0f;
@@ -193,20 +351,20 @@ namespace Roomscale {
             const bool timed = dt > 0.0001f;
             if (timed)
                 verticalSpeed = moved.z / dt;
-            if (Length2D(moved) > TeleportDistance)
+            if (Length2D(moved) > TeleportDistance) {
+                momentum.Reset();
+                carried = Vector(0, 0, 0);
+                carriedSteady = false;
                 return Vector(0, 0, 0);
-            // Stick locomotion moves the camera with the body, as it always
-            // has; only movement the follow asked for is handed over.
+            }
             if (now - lastCommand > CreditSeconds) {
                 stall = 0.0f;
                 boost.slowFor = 0.0f;
-                return Vector(0, 0, 0);
             }
-            const float ahead = offset.x * direction.x + offset.y * direction.y;
-            const float progress = Progress(moved, direction, ahead + OvershootAllowance);
-            if (following && timed) {
-                const float rate = progress / dt;
-                boost.Step(dt, rate, commandSpeed, crouching && now - crouchSince >= CrouchSettleSeconds);
+            else if (following && timed) {
+                const float ahead = offset.x * direction.x + offset.y * direction.y;
+                const float rate = Progress(moved, direction, ahead + OvershootAllowance) / dt;
+                boost.Step(dt, rate, commandSpeed, Ducked(now));
                 stall = rate < StallFraction * commandSpeed ? stall + dt : 0.0f;
                 if (stall > StallSeconds) {
                     following = false;
@@ -217,7 +375,28 @@ namespace Roomscale {
                     boost.Reset();
                 }
             }
-            return Vector(direction.x * progress, direction.y * progress, 0.0f);
+            // Stick locomotion moves the camera with the body, as it always
+            // has; only movement the follow's own momentum explains is
+            // handed over, in whatever direction that momentum now points.
+            if (!timed)
+                return Vector(0, 0, 0);
+            if (momentum.Idle()) {
+                const Vector measured(moved.x / dt, moved.y / dt, 0.0f);
+                carriedSteady = Length2D(measured - carried) <= CarriedSteadiness;
+                carried = carried * (1.0f - CarriedBlend) + measured * CarriedBlend;
+                return Vector(0, 0, 0);
+            }
+            if (!carriedSteady)
+                carried = Vector(0, 0, 0);
+            // Whichever explains the movement better: the body carried as
+            // measured, or not carried at all. The coast after the stick, say,
+            // ends while the follow is under way.
+            const Vector own(moved.x - carried.x * dt, moved.y - carried.y * dt, 0.0f);
+            if (momentum.Miss(moved, dt) < momentum.Miss(own, dt)) {
+                carried = Vector(0, 0, 0);
+                return momentum.Share(moved, dt);
+            }
+            return momentum.Share(own, dt);
         }
     };
 }

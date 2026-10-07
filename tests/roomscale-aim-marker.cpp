@@ -51,8 +51,9 @@ struct Trace {
 };
 
 // One run of the follow against the mover. The client sees the body one tick
-// late and interpolated, as it does in single player; the renderer uses the
-// head offset computed at the previous update, as VR::UpdateTracking does.
+// late and interpolated, as it does in single player; the renderer takes the
+// body's movement out of the head offset just before drawing, as
+// Hooks::dRenderView does through VR::UpdateRoomscaleFollow.
 Trace Run(const Scenario& scenario, bool withHead) {
     const Vector axis(cosf(0.65f), sinf(0.65f), 0.0f);
     Roomscale::Follow follow;
@@ -88,13 +89,13 @@ Trace Run(const Scenario& scenario, bool withHead) {
             if (history.size() > 8) history.erase(history.begin());
         }
         const float seen = client(t);
-        trace.body.push_back(seen);
-        trace.camera.push_back(seen + offset);
-        trace.head.push_back(head);
         const Vector covered = follow.Credit(t + 100.0, true, axis * seen, axis * (head - center));
         assert(covered.z == 0.0f);
         center += covered.x * axis.x + covered.y * axis.y;
         offset = head - center;
+        trace.body.push_back(seen);
+        trace.camera.push_back(seen + offset);
+        trace.head.push_back(head);
         trace.maxGap = std::max(trace.maxGap, fabsf(offset));
     }
     trace.endGap = fabsf(offset);
@@ -150,8 +151,8 @@ unsigned TestFollow() {
         }
     for (const Scenario& scenario : free) {
         const Outcome outcome = Measure(scenario);
-        assert(outcome.maxError < 2.0f);
-        assert(outcome.endError < 0.5f);
+        assert(outcome.maxError < 0.5f);
+        assert(outcome.endError < 0.25f);
         assert(outcome.endGap < Roomscale::StartDistance);
         assert(!outcome.blocked);
         ++scenarios;
@@ -175,27 +176,73 @@ unsigned TestFollow() {
         ++scenarios;
     }
 
-    // Not usable (menu, lost tracking) forgets everything, and a teleport or
-    // movement nobody commanded is never handed over.
+    // Movement is handed over only as far as the follow's own momentum
+    // explains it, in whatever direction that momentum points. Movement
+    // before a command, a push across the momentum, a teleport, the stick,
+    // and anything once the momentum has died away are not.
     Roomscale::Follow follow;
     Vector wish;
     assert(!follow.Command(100.0, { 20, 0, 0 }, { 0, 0, 0 }, false, false, wish));
     assert(follow.Credit(100.0, true, { 0, 0, 0 }, { 20, 0, 0 }).LengthSqr() == 0.0f);
-    assert(follow.Command(100.01, { 20, 0, 0 }, { 0, 0, 0 }, false, false, wish));
-    assert(wish.x > 0.0f && wish.y == 0.0f && follow.following);
-    assert(follow.Credit(100.02, true, { 500, 0, 0 }, { 20, 0, 0 }).LengthSqr() == 0.0f);
-    const Vector covered = follow.Credit(100.03, true, { 501, 0, 0 }, { 20, 0, 0 });
-    assert(fabsf(covered.x - 1.0f) < 0.001f && covered.y == 0.0f);
-    assert(follow.Credit(100.04, true, { 500, 0, 0 }, { 19, 0, 0 }).LengthSqr() == 0.0f);
-    // Later movement the follow did not command, even along the same line.
-    assert(follow.Credit(100.2, true, { 505, 0, 0 }, { 19, 0, 0 }).LengthSqr() == 0.0f);
-    assert(follow.Command(100.51, { 19, 0, 0 }, { 505, 0, 0 }, true, false, wish) == false);
-    assert(follow.Command(100.8, { 19, 0, 0 }, { 505, 0, 0 }, false, false, wish) == false);
-    assert(follow.Command(100.92, { 19, 0, 0 }, { 505, 0, 0 }, false, false, wish));
+    assert(follow.Credit(100.015, true, { 1, 0, 0 }, { 20, 0, 0 }).LengthSqr() == 0.0f);
+    Vector body(1, 0, 0);
+    double now = 100.015;
+    const auto agree = [&](const Vector& offset) {
+        assert(follow.Command(now, offset, body, false, false, wish) && follow.following);
+        const Vector moved = follow.momentum.velocity * Roomscale::TickSeconds;
+        body += moved;
+        now += Roomscale::TickSeconds;
+        const Vector covered = follow.Credit(now, true, body, offset);
+        assert((covered - moved).LengthSqr() < 1e-8f);
+        ++scenarios;
+    };
+    for (int tick = 0; tick < 12; ++tick)
+        agree({ 20, 0, 0 });
+    const Vector straight = follow.momentum.velocity;
+    assert(straight.x > 40.0f && fabsf(straight.y) < 1e-6f);
+    // Turning: the momentum still points mostly along the old direction,
+    // and that part is the follow's too.
+    for (int tick = 0; tick < 6; ++tick)
+        agree({ 0, 20, 0 });
+    const Vector turning = follow.momentum.velocity;
+    assert(turning.x > 20.0f && turning.y > 20.0f);
+    const auto credit = [&](const Vector& moved) {
+        body += moved;
+        now += Roomscale::TickSeconds;
+        return follow.Credit(now, true, body, { 0, 20, 0 });
+    };
+    const Vector expected = turning * Roomscale::TickSeconds;
+    // A push across the momentum carries the camera with the body.
+    const float expectedLength = sqrtf(expected.LengthSqr());
+    Vector covered = credit(expected + Vector(-expected.y, expected.x, 0) * 2.0f);
+    assert(sqrtf((covered - expected).LengthSqr()) < 0.2f * expectedLength);
+    // So does one against it, or one far beyond what the momentum explains.
+    assert(credit(expected * -1.0f).LengthSqr() == 0.0f);
+    covered = credit(expected * 20.0f);
+    assert(sqrtf(covered.LengthSqr()) <= Roomscale::MaxShareRatio * expectedLength + Roomscale::ExplainedSlack + 0.001f);
+    // A teleport is not handed over and ends the momentum.
+    assert(credit({ 500, 0, 0 }).LengthSqr() == 0.0f && follow.momentum.velocity.LengthSqr() == 0.0f);
+    for (int tick = 0; tick < 8; ++tick)
+        agree({ 20, 0, 0 });
+    // Once the follow stops commanding, friction ends the momentum, and
+    // later movement is not handed over, even along the same line.
+    for (int tick = 0; tick < 40; ++tick)
+        assert(!follow.Command(now + tick * Roomscale::TickSeconds, { 1, 0, 0 }, body, false, false, wish));
+    now += 40 * Roomscale::TickSeconds;
+    follow.Credit(now, true, body, { 1, 0, 0 });
+    assert(follow.momentum.velocity.LengthSqr() == 0.0f);
+    assert(credit({ 2, 0, 0 }).LengthSqr() == 0.0f);
+    // The stick's movement is never the follow's.
+    for (int tick = 0; tick < 8; ++tick)
+        agree({ 20, 0, 0 });
+    assert(!follow.Command(now, { 20, 0, 0 }, body, true, false, wish));
+    assert(follow.momentum.velocity.LengthSqr() == 0.0f && credit({ 1, 0, 0 }).LengthSqr() == 0.0f);
+    assert(follow.Command(now + 0.5, { 19, 0, 0 }, body, false, false, wish));
     follow.verticalSpeed = 400.0f;
-    assert(!follow.Command(100.93, { 19, 0, 0 }, { 505, 0, 0 }, false, false, wish));
-    follow.Credit(100.94, false, { 505, 0, 0 }, { 19, 0, 0 });
+    assert(!follow.Command(now + 0.51, { 19, 0, 0 }, body, false, false, wish));
+    follow.Credit(now + 0.52, false, body, { 19, 0, 0 });
     assert(!follow.originValid && !follow.following && !follow.blocked);
+    assert(follow.momentum.velocity.LengthSqr() == 0.0f);
     // A head that is through a portal brings the body after it at once,
     // without the dead zone that applies otherwise.
     Roomscale::Follow crossing;
@@ -210,6 +257,113 @@ unsigned TestFollow() {
     crossing.stickUntil = -1.0e9;
     crossing.verticalSpeed = 400.0f;
     assert(!crossing.Command(200.06, { 3, 0, 0 }, { 0, 0, 0 }, false, false, wish));
+    return scenarios;
+}
+
+// The same follow on the floor: Source ground movement in two dimensions,
+// optionally on a platform that carries the body. 'interpolated' false shows
+// the client the body's last tick as is, a step per tick.
+struct Floor {
+    std::function<Vector(double)> head;                                       // metres
+    std::function<Vector(double)> platform = [](double) { return Vector(0, 0, 0); };  // units/s
+    bool interpolated = true;
+    float accelerate = kAccelerate;
+    double fps = 90.0, seconds = 7.0;
+};
+
+struct FloorOutcome { float maxError, endError, maxGap; bool blocked; };
+
+FloorOutcome RunFloor(const Floor& floor) {
+    Roomscale::Follow follow;
+    Vector position(0, 0, 0), velocity(0, 0, 0), carried(0, 0, 0);
+    std::vector<std::pair<double, Vector>> history{ { 0.0, Vector(0, 0, 0) } };
+    const auto client = [&](double time) {
+        const double at = time - kTick;
+        for (size_t i = 0; i + 1 < history.size(); ++i)
+            if (history[i].first <= at && at <= history[i + 1].first) {
+                if (!floor.interpolated) return history[i].second;
+                const float u = static_cast<float>((at - history[i].first) / (history[i + 1].first - history[i].first));
+                return history[i].second + (history[i + 1].second - history[i].second) * u;
+            }
+        return at > history.back().first ? history.back().second : history.front().second;
+    };
+    Vector center(0, 0, 0);
+    double nextTick = 0.0;
+    FloorOutcome outcome{ 0.0f, 0.0f, 0.0f, false };
+    for (double t = 0.0; t < floor.seconds; t += 1.0 / floor.fps) {
+        const Vector head = floor.head(t) * kScale;
+        while (nextTick <= t) {
+            Vector wish(0, 0, 0);
+            if (!follow.Command(t + 100.0, head - center, client(t), false, false, wish))
+                wish = Vector(0, 0, 0);
+            const float speed = Roomscale::Length2D(velocity);
+            if (speed > 0.1f)
+                velocity *= std::max(0.0f, speed - std::max(speed, kStopSpeed) * kFriction * kTick) / speed;
+            const float wishSpeed = std::min(Roomscale::Length2D(wish), kMaxSpeed);
+            if (wishSpeed > 0.0f) {
+                const Vector unit = wish * (1.0f / Roomscale::Length2D(wish));
+                const float add = wishSpeed - (velocity.x * unit.x + velocity.y * unit.y);
+                if (add > 0.0f) velocity += unit * std::min(floor.accelerate * kTick * wishSpeed, add);
+            }
+            const Vector ride = floor.platform(nextTick) * kTick;
+            position += velocity * kTick + ride;
+            carried += ride;
+            nextTick += kTick;
+            history.emplace_back(nextTick, position);
+            if (history.size() > 8) history.erase(history.begin());
+        }
+        const Vector seen = client(t);
+        center += follow.Credit(t + 100.0, true, seen, head - center);
+        // The camera belongs at the head, carried along with the platform.
+        const float error = Roomscale::Length2D(seen + (head - center) - (head + carried));
+        outcome.maxError = std::max(outcome.maxError, error);
+        outcome.endError = error;
+        outcome.maxGap = std::max(outcome.maxGap, Roomscale::Length2D(head - center));
+    }
+    outcome.blocked = follow.blocked;
+    return outcome;
+}
+
+unsigned TestFloor() {
+    unsigned scenarios = 0;
+    const auto after = [](double t) { return std::max(t - 0.5, 0.0); };
+    std::vector<std::function<Vector(double)>> walks{
+        // A one-metre circle at 1.2 m/s, a half-metre one at 1.4 m/s.
+        [=](double t) { const double a = after(t) * 1.2; return Vector(sinf(a), 1.0f - cosf(a), 0); },
+        [=](double t) { const double a = after(t) * 2.8; return Vector(0.5f * sinf(a), 0.5f * (1.0f - cosf(a)), 0); },
+        // Straight ahead, then a right angle.
+        [=](double t) { const float d = static_cast<float>(after(t) * 1.3);
+            return d < 1.5f ? Vector(d, 0, 0) : Vector(1.5f, d - 1.5f, 0); },
+        // Weaving.
+        [=](double t) { const float d = static_cast<float>(after(t)); return Vector(d, 0.3f * sinf(d * 3.0f), 0); },
+    };
+    for (const auto& walk : walks)
+        for (double fps : { 72.0, 90.0, 120.0 }) {
+            Floor floor{ walk };
+            floor.fps = fps;
+            const FloorOutcome outcome = RunFloor(floor);
+            assert(outcome.maxError < 0.5f && outcome.endError < 0.25f && !outcome.blocked);
+            ++scenarios;
+            // A client that shows the body tick by tick, and an engine
+            // that accelerates differently, cost some precision only.
+            floor.interpolated = false;
+            assert(RunFloor(floor).maxError < 4.0f);
+            floor.interpolated = true;
+            floor.accelerate = 6.0f;
+            const FloorOutcome slower = RunFloor(floor);
+            assert(slower.maxError < 2.5f && slower.endError < 2.5f);
+            scenarios += 2;
+        }
+    // A platform carries the body, and the camera with it, while the user
+    // walks across it. (One that starts while the body is already chasing
+    // the head looks like slow ground and is not told apart.)
+    for (const Vector& speed : { Vector(0, 60, 0), Vector(60, 0, 0), Vector(-40, 30, 0) }) {
+        Floor floor{ [=](double t) { return Vector(static_cast<float>(after(t) * 0.8), 0, 0); } };
+        floor.platform = [=](double t) { return t > 0.1 && t < 4.0 ? speed : Vector(0, 0, 0); };
+        const FloorOutcome outcome = RunFloor(floor);
+        assert(outcome.maxError < 3.0f && outcome.endError < 1.0f && outcome.maxGap < 20.0f);
+        ++scenarios;
+    }
     return scenarios;
 }
 
@@ -228,6 +382,31 @@ unsigned TestHelpers() {
         assert(speed == Roomscale::MinSpeed || speed * speed / 800.0f <= distance);
         previous = speed;
         ++checks;
+    }
+    // Walking into a wall portal aims into the part of the opening the hull
+    // fits through. A head already there, and floor portals, are left alone.
+    {
+        const float limit = 32.0f - Roomscale::BodyHalfWidth - Roomscale::OpeningEdgeMargin;
+        const auto across = [](const Vector& v, const Vector& axis) { return v.x * axis.x + v.y * axis.y; };
+        for (float heading : { 0.0f, 0.9f, 2.5f, -1.7f }) {
+            const Vector forward(cosf(heading), sinf(heading), 0), left(-sinf(heading), cosf(heading), 0);
+            const Vector body = forward * 10.0f + left * 25.0f;
+            for (float headAcross : { -38.0f, -14.5f, -10.0f, 0.0f, 13.0f, 20.0f, 38.0f }) {
+                const Vector head = forward * -12.0f + left * headAcross;
+                const Vector aimed = Roomscale::IntoOpening(head - body, body, forward, left, 32.0f);
+                const Vector target = body + aimed;
+                assert(fabsf(across(target, forward) + 12.0f) < 0.001f);
+                assert(fabsf(across(target, left) - std::clamp(headAcross, -limit, limit)) < 0.001f);
+                ++checks;
+            }
+        }
+        const Vector offset(-20, 5, 3);
+        const Vector up(0, 0, 1), sideways(0, 1, 0);
+        assert((Roomscale::IntoOpening(offset, { 0, 30, 0 }, up, sideways, 32.0f) - offset).LengthSqr() == 0.0f);
+        assert((Roomscale::IntoOpening(offset, { 0, 30, 0 }, { 1, 0, 0 }, { 0, 0, 1 }, 32.0f) - offset).LengthSqr() == 0.0f);
+        assert((Roomscale::IntoOpening(offset, { NAN, 30, 0 }, { 1, 0, 0 }, sideways, 32.0f) - offset).LengthSqr() == 0.0f);
+        assert(Roomscale::IntoOpening(offset, { 0, 30, 0 }, { 1, 0, 0 }, sideways, 32.0f).z == 3.0f);
+        checks += 4;
     }
     assert(fabsf(Roomscale::Progress({ 3, 4, 9 }, { 0.6f, 0.8f, 0 }, 10.0f) - 5.0f) < 0.0001f);
     assert(Roomscale::Progress({ 3, 4, 0 }, { 0.6f, 0.8f, 0 }, 2.0f) == 2.0f);
@@ -350,7 +529,7 @@ unsigned TestLog() {
 }
 
 int main() {
-    const unsigned follow = TestFollow();
+    const unsigned follow = TestFollow() + TestFloor();
     const unsigned helpers = TestHelpers();
     const unsigned marker = TestAimMarker();
     const unsigned log = TestLog();

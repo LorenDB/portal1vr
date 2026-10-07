@@ -941,6 +941,13 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	const MapCamera::State &mapCamera = m_VR->m_MapCamera;
 
 	m_VR->m_SetupOrigin = position;
+	m_VR->m_FollowOpeningValid = engineCamera.hasOpening;
+	m_VR->m_FollowOpeningCenter = engineCamera.center;
+	m_VR->m_FollowOpeningForward = engineCamera.forward;
+	m_VR->m_FollowOpeningLeft = engineCamera.left;
+	// Hand the body's movement since the last frame over from the head
+	// offset before the eyes are placed from this body position.
+	m_VR->UpdateRoomscaleFollow();
 	m_VR->UpdateCameraCollision(position);
 
 	const Vector hmdAngle = mapCamera.TurnAngles(m_VR->GetViewAngle());
@@ -1036,7 +1043,11 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	m_PushedHud = false;
 	rndrContext->Release();
 
-	if (m_VR->m_RenderWindow) {
+	// The desktop pass is the only one that draws the HUD. The end credits
+	// are HUD, and painting them is what plays them: draw it while they roll
+	// even with the desktop window off, for the flat screen in the headset.
+	const bool creditsRolling = m_VR->UpdateCreditsRolling();
+	if (m_VR->m_RenderWindow || creditsRolling) {
 		s_HasLocalPlayerBodyTransform = false;
 		s_BodyDrawTriggered = false;
 		s_InlineBodyDrawEligible = true;
@@ -1086,7 +1097,12 @@ bool __fastcall Hooks::dCreateMove(void *ecx, void *edx, float flInputSampleTime
 		const bool crouchHeld = m_VR->IsCrouchHeld();
 		cmd->buttons = primaryHeld ? (cmd->buttons | IN_ATTACK) : (cmd->buttons & ~IN_ATTACK);
 		cmd->buttons = secondaryHeld ? (cmd->buttons | IN_ATTACK2) : (cmd->buttons & ~IN_ATTACK2);
-		cmd->buttons = jumpHeld ? (cmd->buttons | IN_JUMP) : (cmd->buttons & ~IN_JUMP);
+		// Jump only adds. Maps press it too: escape_02's ending sends the
+		// client "+jump" through a point_clientcommand to lift the player off
+		// the floor into the zero-gravity pull, and clearing it here left the
+		// player standing while GLaDOS went up through the ceiling.
+		if (jumpHeld)
+			cmd->buttons |= IN_JUMP;
 		cmd->buttons = crouchHeld ? (cmd->buttons | IN_DUCK) : (cmd->buttons & ~IN_DUCK);
 		cmd->buttons = reloadHeld ? (cmd->buttons | IN_RELOAD) : (cmd->buttons & ~IN_RELOAD);
 		// Roll stays out of what the engine is told (see VR::EngineViewAngles).

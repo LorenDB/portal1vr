@@ -28,6 +28,8 @@
 #include "pickuptrace.h"
 #include "vrsettings.h"
 #include "roomscale.h"
+#include "portalcamera.h"
+#include "credits.h"
 #include "aimmarker.h"
 
 namespace
@@ -428,6 +430,7 @@ void VR::Update()
     }
 
     UpdateTracking();
+    LogFramePacing();
     if (!loggedAfterTracking)
     {
         PortalVrLog("VR::Update completed UpdateTracking");
@@ -515,9 +518,30 @@ void VR::SubmitVRTextures()
     {
         // The stock menu, and any frame without a rendered world (loading
         // screens, startup), is shown as the desktop frame on a flat screen.
-        if ((sceneMissing || m_Game->IsCursorVisible()) && kEnableVrMenuSubmission)
+        // So are the end credits, which only the desktop pass draws.
+        const bool cursorVisible = m_Game->IsCursorVisible();
+        const char *reason = !kEnableVrMenuSubmission ? nullptr
+            : sceneMissing ? "no world" : cursorVisible ? "menu" : m_CreditsRolling ? "credits" : nullptr;
+        // The world pass can leave depth in the backbuffer's alpha. A monitor
+        // ignores it, but the compositor blends the flat screen by it, so
+        // credits drawn over the world can come out see-through. The menu
+        // keeps its alpha; the credits screen is shown opaque.
+        const bool opaque = reason && !sceneMissing && !cursorVisible && m_CreditsRolling;
+        if (opaque != m_FlatScreenOpaque)
         {
-            if (!m_Overlay->IsOverlayVisible(m_MainMenuHandle))
+            const auto flagError = m_Overlay->SetOverlayFlag(m_MainMenuHandle, vr::VROverlayFlags_IgnoreTextureAlpha, opaque);
+            PortalVrLog("Flat screen %s texture alpha result=%d", opaque ? "ignores" : "uses", flagError);
+            m_FlatScreenOpaque = opaque;
+        }
+        if (reason != m_FlatScreenReason)
+        {
+            PortalVrLog("Flat screen %s%s", reason ? "shown for " : "hidden", reason ? reason : "");
+            m_FlatScreenReason = reason;
+        }
+        if (reason)
+        {
+            const bool wasVisible = m_Overlay->IsOverlayVisible(m_MainMenuHandle);
+            if (!wasVisible)
                 RepositionOverlays();
             vr::VRTextureBounds_t bounds{0, 0, 1, 1};
             const vr::HmdVector2_t mouseScale = {
@@ -533,7 +557,16 @@ void VR::SubmitVRTextures()
                 PortalVrLog("Menu texture submission result=%d", error);
                 lastOverlayError = error;
             }
-            m_Overlay->ShowOverlay(m_MainMenuHandle);
+            const auto showError = m_Overlay->ShowOverlay(m_MainMenuHandle);
+            // Normally once each time it appears; every frame would mean the
+            // compositor keeps it hidden.
+            static unsigned placements = 0;
+            if (!wasVisible && placements < 40)
+            {
+                ++placements;
+                PortalVrLog("Flat screen placed in front of the head; show result=%d visible=%d",
+                    showError, m_Overlay->IsOverlayVisible(m_MainMenuHandle));
+            }
         }
         else
             m_Overlay->HideOverlay(m_MainMenuHandle);
@@ -897,9 +930,12 @@ bool VR::RoomscaleMove(bool stickWalking, float& forwardMove, float& sideMove)
     forwardMove = sideMove = 0.0f;
     Vector wish;
     const double now = RoomscaleSeconds();
-    const Vector offset = RoomscaleOffset();
+    Vector offset = RoomscaleOffset();
     // The last rendered eyes were through a portal the body has not crossed.
     m_RoomscaleFollow.urgent = m_EyeViewThroughPortal;
+    if (m_RoomscaleFollow.urgent && m_FollowOpeningValid)
+        offset = Roomscale::IntoOpening(offset, m_SetupOrigin - m_FollowOpeningCenter,
+            m_FollowOpeningForward, m_FollowOpeningLeft, PortalCamera::HalfWidth);
     const bool wasFollowing = m_RoomscaleFollow.following;
     const bool follow = m_RoomscaleFollow.Command(now, offset, m_SetupOrigin,
             stickWalking, IsCrouchHeld(), wish);
@@ -943,6 +979,57 @@ void VR::UpdateMapCamera(int viewEntity, int localPlayer, const Vector &cameraOr
         PortalVrLog("Map camera released; view returns to the player");
 }
 
+void VR::LogFramePacing()
+{
+    static_assert(sizeof(vr::Compositor_CumulativeStats) == 112, "OpenVR's layout of the compositor statistics");
+    auto *compositor = vr::VRCompositor();
+    const std::uint64_t now = GetTickCount64();
+    const bool playing = compositor && m_Game->IsInGame() && !m_Game->IsCursorVisible();
+    if (!playing)
+    {
+        m_FramePacingSince = 0;
+        return;
+    }
+    if (m_FramePacingSince && now - m_FramePacingSince < 10000)
+        return;
+    vr::Compositor_CumulativeStats stats{};
+    compositor->GetCumulativeStats(&stats, sizeof(stats));
+    const auto &last = m_FramePacingStats;
+    if (m_FramePacingSince && stats.m_nPid == last.m_nPid && stats.m_nNumFramePresents >= last.m_nNumFramePresents)
+    {
+        const unsigned reprojected = stats.m_nNumReprojectedFrames - last.m_nNumReprojectedFrames;
+        const unsigned dropped = stats.m_nNumDroppedFrames - last.m_nNumDroppedFrames;
+        if (reprojected || dropped)
+            PortalVrLog("Frame pacing over %.1fs: presents=%u reprojected=%u dropped=%u",
+                (now - m_FramePacingSince) / 1000.0, stats.m_nNumFramePresents - last.m_nNumFramePresents,
+                reprojected, dropped);
+    }
+    m_FramePacingStats = stats;
+    m_FramePacingSince = now;
+}
+
+bool VR::UpdateCreditsRolling()
+{
+    static_assert(sizeof(m_CreditsFlags) / sizeof(m_CreditsFlags[0]) == Credits::kElementCount);
+    if (!m_CreditsFlagsResolved && m_Game->m_BaseClient)
+    {
+        m_CreditsFlagsResolved = true;
+        for (size_t i = 0; i < Credits::kElementCount; ++i)
+            m_CreditsFlags[i] = Credits::RollingFlag(m_Game->m_BaseClient, Credits::kElements[i]);
+        PortalVrLog("End credits detection portal=%d hl2=%d",
+            m_CreditsFlags[0] != nullptr, m_CreditsFlags[1] != nullptr);
+    }
+    bool rolling = false;
+    for (const volatile bool *flag : m_CreditsFlags)
+        rolling = rolling || (flag && *flag);
+    rolling = rolling && m_Game->IsInGame();
+    if (rolling != m_CreditsRolling)
+        PortalVrLog(rolling ? "End credits rolling: drawing the HUD and showing it on the flat screen"
+            : "End credits no longer rolling");
+    m_CreditsRolling = rolling;
+    return rolling;
+}
+
 void VR::UpdateRoomscaleFollow()
 {
     // Only while playing: an open menu substitutes its own viewpoint for the
@@ -954,16 +1041,35 @@ void VR::UpdateRoomscaleFollow()
     const bool wasBlocked = m_RoomscaleFollow.blocked;
     Vector covered = m_RoomscaleFollow.Credit(RoomscaleSeconds(), usable, m_SetupOrigin, RoomscaleOffset());
     if (m_RoomscaleFollow.blocked && !wasBlocked)
-        PortalVrLog("Roomscale follow blocked: the body cannot reach the head");
+    {
+        if (m_RoomscaleFollow.urgent && m_FollowOpeningValid)
+        {
+            // Where the body and head were against the opening: across its
+            // width, out of its plane, and up from its center.
+            const Vector body = m_SetupOrigin - m_FollowOpeningCenter;
+            const Vector head = body + RoomscaleOffset();
+            const Vector up = CrossProduct(m_FollowOpeningForward, m_FollowOpeningLeft);
+            PortalVrLog("Roomscale follow blocked at a portal: body across=%f out=%f up=%f head across=%f out=%f",
+                DotProduct(body, m_FollowOpeningLeft), DotProduct(body, m_FollowOpeningForward), DotProduct(body, up),
+                DotProduct(head, m_FollowOpeningLeft), DotProduct(head, m_FollowOpeningForward));
+        }
+        else
+            PortalVrLog("Roomscale follow blocked: the body cannot reach the head");
+    }
     if (covered.LengthSqr() <= 0.0f)
         return;
 
     // Move the recenter point toward the headset by the distance the body
     // covered: the head offset shrinks by exactly what the body gained, so
-    // the camera stays where the head is.
+    // the camera stays where the head is. The eyes are drawn next, from the
+    // body position just credited: the head offset must include it now.
     covered *= 1.0f / m_VRScale;
     VectorPivotXY(covered, { 0, 0, 0 }, -m_RotationOffset.y);
     m_Center += covered;
+    m_HmdPosRelativeRaw = m_HmdPose.TrackedDevicePos - m_Center;
+    Vector hmdPosCorrected = m_HmdPosRelativeRaw;
+    VectorPivotXY(hmdPosCorrected, { 0, 0, 0 }, m_RotationOffset.y);
+    m_HmdPosRelative = hmdPosCorrected * m_VRScale;
 }
 
 bool VR::GetPoseActionPose(vr::VRActionHandle_t action, vr::TrackedDevicePose_t &poseOut)
@@ -1969,7 +2075,6 @@ void VR::UpdateTracking()
     UpdateAutoCalibration();
     if (m_CenterPending && m_HmdPose.isValid) ResetPosition();
     UpdatePhysicalCrouch();
-    UpdateRoomscaleFollow();
 
     // HMD tracking
     Vector hmdPosLocal = m_HmdPose.TrackedDevicePos;
