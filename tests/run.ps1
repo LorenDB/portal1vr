@@ -1,4 +1,4 @@
-param([string]$PortalClient = '', [string]$PortalGunModel = '', [string]$PortalServer = '')
+param([string]$PortalClient = '', [string]$PortalGunModel = '', [string]$PortalServer = '', [string]$PortalEngine = '')
 $ErrorActionPreference='Stop'
 if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) { throw 'Run this from an x86 Native Tools Command Prompt for Visual Studio.' }
 $repository=Split-Path -Parent $PSScriptRoot
@@ -23,6 +23,16 @@ if ($LASTEXITCODE -ne 0) { throw 'Portal camera tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Roomscale/aim marker test build failed.' }
 & (Join-Path $output 'roomscale-aim-marker.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Roomscale follow, aim marker, or log regressions failed.' }
+& cl.exe /nologo /std:c++17 /EHsc /RTC1 /Od /DWIN32 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS "/I$repository\L4D2VR" "/I$repository\L4D2VR\sdk" (Join-Path $PSScriptRoot 'map-camera.cpp') "/Fe$output\map-camera.exe" "/Fo$output\map-camera.obj"
+if ($LASTEXITCODE -ne 0) { throw 'Map camera test build failed.' }
+& (Join-Path $output 'map-camera.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Map camera regressions failed.' }
+if ($PortalEngine) {
+    & cl.exe /nologo /std:c++17 /EHsc /RTC1 /Od /DWIN32 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS "/I$repository\L4D2VR" "/I$repository\L4D2VR\sdk" (Join-Path $PSScriptRoot 'engine-view-entity.cpp') "/Fe$output\engine-view-entity.exe" "/Fo$output\engine-view-entity.obj" psapi.lib
+    if ($LASTEXITCODE -ne 0) { throw 'Engine view-entity test build failed.' }
+    & (Join-Path $output 'engine-view-entity.exe') $PortalEngine
+    if ($LASTEXITCODE -ne 0) { throw 'Installed engine.dll does not match the map-camera view-entity guard.' }
+}
 if ($PortalClient) {
     & cl.exe /nologo /std:c++17 /EHsc /RTC1 /Od /DWIN32 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS "/I$repository\L4D2VR" "/I$repository\L4D2VR\sdk" (Join-Path $PSScriptRoot 'portal-client-layout.cpp') "/Fe$output\portal-client-layout.exe" "/Fo$output\portal-client-layout.obj"
     if ($LASTEXITCODE -ne 0) { throw 'Portal client layout test build failed.' }

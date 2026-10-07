@@ -118,6 +118,9 @@ public:
     C_Portal_Player *GetPortalPlayer(int index = -1);
     C_Portal_Player *GetLocalPortalPlayer();
     int GetLocalPlayerIndex();
+    // The engine's view entity: the local player, or a map camera such as a
+    // point_viewcontrol. -1 when it cannot be read on this engine build.
+    int GetViewEntity();
     bool IsInGame();
     bool GetViewAngles(QAngle &angle);
     bool SetViewAngles(const QAngle &angle);

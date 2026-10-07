@@ -1,0 +1,59 @@
+// Rexaura on this Portal installation's engine and game DLLs, with Portal1VR.
+//
+// Rexaura (Steam app 317790) ships a 2013 copy of Portal's engine. Its maps
+// and content run unchanged on Portal's current binaries, the ones the VR
+// runtime is built against. This file mirrors Rexaura's own gameinfo.txt,
+// with two changes: the VR menu and materials are searched first, and
+// Rexaura's content is reached from this Portal installation.
+//
+// The installer rewrites the "../Rexaura/rexaura" lines when Rexaura is in
+// another Steam library; any absolute path to that folder also works.
+// Saves and settings are written to this folder.
+"GameInfo"
+{
+	game		"Rexaura"
+	title 		"Rexaura"
+	type		singleplayer_only
+	nodifficulty	1
+	hasportals	1
+	icon		"resource/icon"
+	developer	"Ben Bryant (Mevious)"
+	developer_url	"http://www.moddb.com/mods/rexaura"
+
+	FileSystem
+	{
+		SteamAppId				317790
+		AdditionalContentId			400
+
+		SearchPaths
+		{
+			// VR main/pause menu; also where saves and settings go.
+			game+mod			|gameinfo_path|.
+			// VR gun and arm materials, shared with Portal.
+			game+mod			portal/custom/portal1vr
+
+			// Rexaura's content. Its own gameinfo.txt lists it first.
+			game+mod			../Rexaura/rexaura
+			platform			../Rexaura/rexaura
+
+			game_lv				portal/portal_lv.vpk
+			game+mod			portal/portal_english.vpk
+			game+mod			portal/portal_pak.vpk
+			game				|all_source_engine_paths|hl2/hl2_textures.vpk
+			game				|all_source_engine_paths|hl2/hl2_sound_vo_english.vpk
+			game				|all_source_engine_paths|hl2/hl2_sound_misc.vpk
+			game				|all_source_engine_paths|hl2/hl2_misc.vpk
+			platform			|all_source_engine_paths|platform/platform_misc.vpk
+
+			mod+mod_write+default_write_path	|gameinfo_path|.
+			game+game_write			|gameinfo_path|.
+
+			// Portal's client.dll and server.dll: the build Portal1VR hooks.
+			gamebin				portal/bin
+
+			game				|all_source_engine_paths|portal
+			game				|all_source_engine_paths|hl2
+			platform			|all_source_engine_paths|platform
+		}
+	}
+}

@@ -7,6 +7,7 @@
 #include "optionalgungrip.h"
 #include "autocalibration.h"
 #include "roomscale.h"
+#include "mapcamera.h"
 
 #define MAX_STR_LEN 256
 
@@ -142,6 +143,11 @@ public:
 	Vector RoomscaleOffset() const;
 	bool RoomscaleMove(bool stickWalking, float& forwardMove, float& sideMove);
 	void UpdateRoomscaleFollow();
+	// A map camera (point_viewcontrol) owns the view; see mapcamera.h.
+	// MapCameraAlign turns each shot to start in front of the player's gaze.
+	MapCamera::State m_MapCamera;
+	bool m_MapCameraAlign = true;
+	void UpdateMapCamera(int viewEntity, int localPlayer, const Vector &cameraOrigin, float cameraYaw);
 
 	Vector m_LeftControllerPosRel = { 0, 0, 0 };
 	QAngle m_LeftControllerAngAbs = { 0, 0, 0 };

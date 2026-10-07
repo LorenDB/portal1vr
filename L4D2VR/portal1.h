@@ -55,6 +55,10 @@ namespace VTableIndex
 // CPortal_Player (server.dll 0x67578384). The entry index uses 12 bits.
 inline constexpr size_t kServerEntity_GetRefEHandle = 2;
 inline constexpr size_t kViewRender_RenderView = 6;
+// IVRenderView::GetViewEntity: in engine.dll 0x675781e6 a getter of the client
+// state's view entity, `mov eax,[global]; ret`, between OLD_SetProjectionMatrix
+// (`ret 0Ch`, slot 25) and GetLightAtPoint (slot 26) as in the 2013 SDK.
+inline constexpr size_t kRenderView_GetViewEntity = 27;
 inline constexpr size_t kClientMode_CreateMove = 22;
 inline constexpr size_t kClientMode_GetViewModelFOV = 33;
 inline constexpr size_t kClientRenderable_GetModel = 9;

@@ -1,7 +1,10 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$SourceDll,
-    [string]$PortalDirectory
+    [string]$PortalDirectory,
+    # Rexaura's install folder (the one holding rexaura\gameinfo.txt). Found
+    # in the Steam libraries when omitted; Rexaura support is skipped when absent.
+    [string]$RexauraDirectory
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,7 +53,11 @@ function Get-SteamLibraryPaths {
 }
 
 $portalDir = $PortalDirectory
-foreach ($library in $(if (-not $portalDir) { Get-SteamLibraryPaths })) {
+$steamLibraries = $null
+if (-not $PortalDirectory -or -not $RexauraDirectory) {
+    $steamLibraries = @(Get-SteamLibraryPaths)
+}
+foreach ($library in $(if (-not $portalDir) { $steamLibraries })) {
     $candidate = Join-Path $library "steamapps\\common\\Portal"
     if (Test-Path -LiteralPath $candidate) {
         $portalDir = $candidate
@@ -91,6 +98,11 @@ $runtimeFiles = @(
         Source = Join-Path $PSScriptRoot '..\Launch Portal VR.cmd'
         Destination = Join-Path $portalDir 'Launch Portal VR.cmd'
         Label = 'Launch Portal VR.cmd'
+    },
+    @{
+        Source = Join-Path $PSScriptRoot '..\Launch Rexaura VR.cmd'
+        Destination = Join-Path $portalDir 'Launch Rexaura VR.cmd'
+        Label = 'Launch Rexaura VR.cmd'
     },
     @{
         Source = $SourceDll
@@ -185,6 +197,49 @@ if (Test-Path -LiteralPath $materialSource) {
     New-Item -ItemType Directory -Force -Path $materialDestination | Out-Null
     Get-ChildItem -LiteralPath $materialSource -Directory | Copy-Item -Destination $materialDestination -Recurse -Force
     Write-Host "Installed gun and arm materials"
+}
+
+# Rexaura runs as a mod of this Portal installation (-game rexaura_vr), on the
+# Portal engine and game DLLs this runtime hooks. Rexaura's own install ships
+# a 2013 engine and is left unchanged; only its content folder is mounted.
+$rexauraContent = $null
+$rexauraCandidates = if ($RexauraDirectory) { @($RexauraDirectory) } else {
+    @($steamLibraries | ForEach-Object { Join-Path $_ 'steamapps\common\Rexaura' })
+}
+foreach ($candidate in $rexauraCandidates) {
+    foreach ($content in @((Join-Path $candidate 'rexaura'), $candidate)) {
+        if (Test-Path -LiteralPath (Join-Path $content 'maps\rex_00_intro.bsp')) {
+            $rexauraContent = [IO.Path]::GetFullPath($content)
+            break
+        }
+    }
+    if ($rexauraContent) { break }
+}
+if ($RexauraDirectory -and -not $rexauraContent) {
+    throw "Not a Rexaura installation: $RexauraDirectory"
+}
+if ($rexauraContent) {
+    $rexauraVrSource = Join-Path $PSScriptRoot 'rexaura_vr'
+    $rexauraVrDir = Join-Path $portalDir 'rexaura_vr'
+    New-Item -ItemType Directory -Force -Path (Join-Path $rexauraVrDir 'resource') | Out-Null
+    Copy-Item -LiteralPath (Join-Path $rexauraVrSource 'resource\GameMenu.res') `
+        -Destination (Join-Path $rexauraVrDir 'resource\GameMenu.res') -Force
+    # Paths in gameinfo.txt are relative to Portal's folder unless absolute.
+    $portalParent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($portalDir).TrimEnd('\', '/'))
+    $rexauraInstall = [IO.Path]::GetDirectoryName($rexauraContent)
+    $sameLibrary = ([IO.Path]::GetDirectoryName($rexauraInstall) -ieq $portalParent) -and
+        ((Split-Path $rexauraContent -Leaf) -ieq 'rexaura')
+    $rexauraPath = $rexauraContent -replace '\\', '/'
+    if ($sameLibrary) {
+        $rexauraPath = '../' + (Split-Path $rexauraInstall -Leaf) + '/rexaura'
+    }
+    $gameInfo = [IO.File]::ReadAllText((Join-Path $rexauraVrSource 'gameinfo.txt'))
+    $gameInfo = $gameInfo.Replace('../Rexaura/rexaura', $rexauraPath)
+    [IO.File]::WriteAllText((Join-Path $rexauraVrDir 'gameinfo.txt'), $gameInfo)
+    Write-Host "Installed Rexaura VR (content: $rexauraContent). Start it with 'Launch Rexaura VR.cmd'."
+}
+else {
+    Write-Host 'Rexaura not found; skipped Rexaura VR. Pass -RexauraDirectory to add it.'
 }
 
 # Portal's own hands, portal gun, player body and radio song are used. Earlier

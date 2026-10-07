@@ -795,7 +795,8 @@ void VR::UpdateAimMarker(bool eyeFrame)
 
     // The marker follows the ray that both portal shots and pickups use.
     // Before the gun is found it is the only sign of where the hand points.
-    bool show = m_AimMode == 2 && eyeFrame && !m_EyeViewThroughPortal
+    // Not under a map camera: the gun is not drawn, and the eyes are at the camera.
+    bool show = m_AimMode == 2 && eyeFrame && !m_EyeViewThroughPortal && !m_MapCamera.active
         && m_HmdPose.isValid && m_RightControllerPose.isValid
         && m_Game->IsInGame() && !m_Game->IsCursorVisible();
     vr::HmdMatrix34_t transform{};
@@ -931,12 +932,24 @@ bool VR::RoomscaleMove(bool stickWalking, float& forwardMove, float& sideMove)
     return Roomscale::WishToMoves(wish, forward, right, forwardMove, sideMove);
 }
 
+void VR::UpdateMapCamera(int viewEntity, int localPlayer, const Vector &cameraOrigin, float cameraYaw)
+{
+    if (!m_MapCamera.Update(viewEntity, localPlayer, cameraYaw, GetViewAngle().y, m_MapCameraAlign))
+        return;
+    if (m_MapCamera.active)
+        PortalVrLog("Map camera entity=%d origin=%f,%f,%f yaw=%f turn=%f",
+            m_MapCamera.entity, cameraOrigin.x, cameraOrigin.y, cameraOrigin.z, cameraYaw, m_MapCamera.yawOffset);
+    else
+        PortalVrLog("Map camera released; view returns to the player");
+}
+
 void VR::UpdateRoomscaleFollow()
 {
     // Only while playing: an open menu substitutes its own viewpoint for the
     // player's eye, and without 6DOF the camera does not leave the body.
+    // A map camera's origin is not the player's eye either.
     const bool usable = m_Roomscale && m_6DOF && m_IsVREnabled && m_HmdPose.isValid
-        && !m_CenterPending && !m_MenuAnchorValid
+        && !m_CenterPending && !m_MenuAnchorValid && !m_MapCamera.active
         && m_Game->IsInGame() && !m_Game->IsCursorVisible();
     const bool wasBlocked = m_RoomscaleFollow.blocked;
     Vector covered = m_RoomscaleFollow.Credit(RoomscaleSeconds(), usable, m_SetupOrigin, RoomscaleOffset());
@@ -1886,7 +1899,7 @@ void VR::UpdateAutoCalibration()
     auto* player=reinterpret_cast<C_BasePlayer*>(m_Game->GetLocalPortalPlayer());
     bool eligible=m_AutoCalibration && m_6DOF && stable && !turning
         && m_Game->IsInGame() && !m_Game->IsCursorVisible() && now>=m_CalibrationSuppressUntil
-        && player
+        && player && !m_MapCamera.active
         && now-m_LastCarryUpdate>500 && moving && dt>0 && playerDelta.LengthSqr()<dt*dt
         && m_HmdPose.TrackedDeviceVel.LengthSqr()<.04f*.04f
         && Vector(m_HmdPose.TrackedDeviceAngVel.x,m_HmdPose.TrackedDeviceAngVel.y,m_HmdPose.TrackedDeviceAngVel.z).LengthSqr()<15.f*15.f
@@ -2759,6 +2772,7 @@ void VR::ParseConfigFile()
     if (userConfig.count("ShowArms")) parseOrDefault("ShowArms", m_ShowArms, false);
     // Roomscale body-follow, optional for the same reason.
     if (userConfig.count("Roomscale")) parseOrDefault("Roomscale", m_Roomscale, true);
+    if (userConfig.count("MapCameraAlign")) parseOrDefault("MapCameraAlign", m_MapCameraAlign, true);
     /*parseOrDefault("HudDistance", m_HudDistance, 1.3f);
     parseOrDefault("HudSize", m_HudSize, 4.0f);
     parseOrDefault("HudAlwaysVisible", m_HudAlwaysVisible, false);*/

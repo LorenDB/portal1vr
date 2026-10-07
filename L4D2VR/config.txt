@@ -8,6 +8,7 @@ IPDScale=1.0 # Scale of interpupillary distance
 PhysicalCrouch=true # IRL headset drop also ducks; set false for button-only crouch
 PhysicalCrouchDrop=0.25 # Headset drop in meters that starts a crouch (0.1-0.8)
 Roomscale=true # Walking in your room also walks the player body, so collision, buttons, portals and edges follow you; false leaves the body where the stick put it
+MapCameraAlign=true # When a map camera takes over the view (cutscenes such as Rexaura's intro), turn each shot once to start in front of you; false keeps your own heading
 AutoCalibration=true # Preserve tracking-origin position/height/heading changes; ease horizontal alignment only with stable tracking and body/head route mismatch
 AimMode=2 # 0 = None, 2 = Aim dot on the surface the portal gun points at (1 = stock crosshair, which the headset view does not draw)
 ShowArms=false # false shows only the portal gun; true also draws Portal's stock arm models (bare hands, and the forearm inside the gun) and enables the off-hand support grip

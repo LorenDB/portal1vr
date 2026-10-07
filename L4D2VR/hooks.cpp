@@ -20,6 +20,7 @@
 #include "portalcamera.h"
 #include "pickuptrace.h"
 #include "nativepose.h"
+#include "mapcamera.h"
 #include <intrin.h>
 #include <iostream>
 #include <mutex>
@@ -932,11 +933,17 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	{
 		m_VR->NoteGameplayView(position);
 	}
+	// A map camera (point_viewcontrol) owns the engine view: setup carries
+	// its origin and angles. Not behind the menu, whose scene camera the menu
+	// anchor replaces.
+	m_VR->UpdateMapCamera(menuFrame ? -1 : m_Game->GetViewEntity(), m_Game->GetLocalPlayerIndex(),
+		setup.origin, setup.angles.y);
+	const MapCamera::State &mapCamera = m_VR->m_MapCamera;
 
 	m_VR->m_SetupOrigin = position;
 	m_VR->UpdateCameraCollision(position);
 
-	Vector hmdAngle = m_VR->GetViewAngle();
+	const Vector hmdAngle = mapCamera.TurnAngles(m_VR->GetViewAngle());
 	static int renderPoseLogCounter = 0;
 	if ((++renderPoseLogCounter % 120) == 0 && PortalVrDebugLogging())
 	{
@@ -963,7 +970,7 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 		return hkRenderView.fOriginal(ecx, originalSetup, nClearFlags, whatToDraw);
 
 	// The camera center both eyes share, for the first-person body.
-	const Vector cameraCenter = m_VR->GetViewOrigin(position);
+	const Vector cameraCenter = mapCamera.TurnPosition(position, m_VR->GetViewOrigin(position));
 	bool throughPortal = false;
 	const auto renderEye = [&](VR::TextureID id, ITexture *texture, const Vector &eyeInPlayerSpace)
 	{
@@ -1020,8 +1027,10 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 		s_HideOwnBody = false;
 		rndrContext->PopRenderTargetAndViewport();
 	};
-	renderEye(VR::Texture_LeftEye, m_VR->m_LeftEyeTexture, m_VR->GetViewOriginLeft(position));
-	renderEye(VR::Texture_RightEye, m_VR->m_RightEyeTexture, m_VR->GetViewOriginRight(position));
+	renderEye(VR::Texture_LeftEye, m_VR->m_LeftEyeTexture,
+		mapCamera.TurnPosition(position, m_VR->GetViewOriginLeft(position)));
+	renderEye(VR::Texture_RightEye, m_VR->m_RightEyeTexture,
+		mapCamera.TurnPosition(position, m_VR->GetViewOriginRight(position)));
 	m_VR->m_EyeViewThroughPortal = throughPortal;
 
 	m_PushedHud = false;

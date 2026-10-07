@@ -7,22 +7,23 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output',type=Path,required=True)
 args=parser.parse_args();args.output.parent.mkdir(parents=True,exist_ok=True)
 files={}
-for name in ['Release/d3d9.dll','Launch Portal VR.cmd','L4D2VR/copy-to-portal.ps1',
+for name in ['Release/d3d9.dll','Launch Portal VR.cmd','Launch Rexaura VR.cmd','rexaura-vr-launch.sh','L4D2VR/copy-to-portal.ps1',
              'L4D2VR/config.txt','L4D2VR/manifest.vrmanifest',
              'L4D2VR/portal1vr_capsule_main.png','L4D2VR/portal1vr_portrait_main.png',
              'thirdparty/openvr/bin/win32/openvr_api.dll',
              'thirdparty/openvr/LICENSE','thirdparty/minhook/LICENSE.txt','dxvk/LICENSE']:
     files[name]=(repo/name).read_bytes()
-for folder in ['L4D2VR/SteamVRActionManifest','L4D2VR/materials','L4D2VR/resource']:
+for folder in ['L4D2VR/SteamVRActionManifest','L4D2VR/materials','L4D2VR/resource','L4D2VR/rexaura_vr']:
     for path in (repo/folder).rglob('*'):
         if path.is_file():files[path.relative_to(repo).as_posix()]=path.read_bytes()
-files['Install.ps1']=b'''param([string]$PortalDirectory)
+files['Install.ps1']=b'''param([string]$PortalDirectory, [string]$RexauraDirectory)
 $ErrorActionPreference = 'Stop'
 if (Get-Process hl2 -ErrorAction SilentlyContinue) {
     throw 'Close Portal before installing this update.'
 }
 $options = @{ SourceDll = (Join-Path $PSScriptRoot 'Release/d3d9.dll') }
 if ($PortalDirectory) { $options.PortalDirectory = $PortalDirectory }
+if ($RexauraDirectory) { $options.RexauraDirectory = $RexauraDirectory }
 & (Join-Path $PSScriptRoot 'L4D2VR/copy-to-portal.ps1') @options
 '''
 files['Install.cmd']=b'@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install.ps1" %*\r\npause\r\n'
@@ -36,6 +37,19 @@ No compiler or Blender installation is required.
    For a custom location, run PowerShell in this folder:
    .\\Install.ps1 -PortalDirectory "D:\\SteamLibrary\\steamapps\\common\\Portal"
 3. Start SteamVR, then run Launch Portal VR.cmd from the Portal game folder.
+
+Rexaura (Steam app 317790) is also supported. Install Rexaura from Steam
+before running Install.cmd; the installer then adds a "rexaura_vr" mod
+folder to Portal. Run Launch Rexaura VR.cmd from the Portal game folder. It
+plays Rexaura's chambers on Portal's own engine, which this runtime is built
+for, so Portal must be installed too. Rexaura's own folder is not changed;
+VR saves are kept in Portal\\rexaura_vr. For a custom Rexaura location:
+   .\\Install.ps1 -RexauraDirectory "D:\\SteamLibrary\\steamapps\\common\\Rexaura"
+On Linux with Proton, Steam's launch options cannot replace Portal's own
+"-game portal"; use rexaura-vr-launch.sh as described in the project README.
+
+Portal with RTX and Portal: Prelude RTX are not supported: see the project
+README.
 
 The installer copies the x86 runtime, OpenVR DLL, controller bindings and
 gun/arm materials. The portal gun, hands, player body and radio song are

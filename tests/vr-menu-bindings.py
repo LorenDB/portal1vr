@@ -30,10 +30,13 @@ for path in folder.glob("bindings*.json"):
             assert actual == item["output"].replace("/actions/main", "/actions/left_handed")
             assert actual in actions
             checks += 1
-menu = (root / "L4D2VR/resource/gamemenu.res").read_text()
-for command in ("portal1vr_hand_left", "portal1vr_hand_right", "portal1vr_recenter"):
-    assert menu.count('"engine ' + command + '"') == 1
-for stock in ("ResumeGame", "OpenNewGameDialog", "OpenOptionsDialog", "Quit"):
-    assert '"' + stock + '"' in menu
+# Portal's menu, and Rexaura's (which drops commentary and achievements).
+menus = ("L4D2VR/resource/gamemenu.res", "L4D2VR/rexaura_vr/resource/GameMenu.res")
+for menu_path in menus:
+    menu = (root / menu_path).read_text()
+    for command in ("portal1vr_hand_left", "portal1vr_hand_right", "portal1vr_recenter"):
+        assert menu.count('"engine ' + command + '"') == 1, (menu_path, command)
+    for stock in ("ResumeGame", "OpenNewGameDialog", "OpenOptionsDialog", "Quit"):
+        assert '"' + stock + '"' in menu, (menu_path, stock)
 print(json.dumps({"mirrored_action_count": len(main), "binding_checks": checks,
-                  "controller_types": 3, "menu_commands": 3, "passed": True}))
+                  "controller_types": 3, "menus": len(menus), "menu_commands": 3, "passed": True}))

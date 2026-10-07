@@ -366,6 +366,30 @@ int Game::GetLocalPlayerIndex()
     return GetLocalPortalPlayer() ? Portal1::Constants::kSinglePlayerLocalIndex : -1;
 }
 
+int Game::GetViewEntity()
+{
+    // Only call the slot when it has the getter's exact shape, so that a
+    // different engine build turns map-camera handling off instead.
+    using GetViewEntityFn = int(__thiscall *)(void *);
+    static void *renderView = nullptr;
+    static GetViewEntityFn getter = nullptr;
+    static bool resolved = false;
+    if (!resolved)
+    {
+        renderView = GetInterface("engine.dll", Portal1::Interfaces::kEngineRenderView, false);
+        if (!renderView)
+            return -1;
+        resolved = true;
+        const uintptr_t function = SigScanner::GetVirtualFunction(renderView,
+            Portal1::VTableIndex::kRenderView_GetViewEntity);
+        const auto *code = reinterpret_cast<const unsigned char *>(function);
+        if (function && SigScanner::IsReadable(function, 6) && code[0] == 0xA1 && code[5] == 0xC3)
+            getter = reinterpret_cast<GetViewEntityFn>(function);
+        PortalVrLog("Map camera detection available=%d", getter != nullptr);
+    }
+    return getter ? getter(renderView) : -1;
+}
+
 bool Game::IsInGame()
 {
     if (IEngineClient *engineClient = GetEngineClient())
