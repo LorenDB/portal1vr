@@ -35,10 +35,9 @@ namespace Roomscale {
     constexpr float StickHoldSeconds = 0.4f;
     // Movement is the follow's doing only shortly after it was commanded.
     constexpr float CreditSeconds = 0.15f;
-    // The body only follows onto ground. A probe narrower than the player
-    // hull stops it while half of the hull still rests on the ledge.
-    constexpr float GroundProbeHalfWidth = 8.0f;
-    constexpr float GroundProbeDepth = 88.0f;
+    // With the head already through a portal the body has to come after it:
+    // no waiting for the head to get far ahead.
+    constexpr float UrgentDistance = 1.0f;
     // Larger jumps between frames are teleports, not locomotion.
     constexpr float TeleportDistance = 64.0f;
     constexpr float MaxFrameSeconds = 0.25f;
@@ -112,6 +111,9 @@ namespace Roomscale {
         bool blocked = false;
         bool originValid = false;
         bool crouching = false;
+        // Set by the caller while the head is through a portal the body has
+        // not crossed. The body then follows at once.
+        bool urgent = false;
         Vector direction = { 0, 0, 0 };
         Vector blockedOffset = { 0, 0, 0 };
         Vector blockedBody = { 0, 0, 0 };
@@ -125,10 +127,10 @@ namespace Roomscale {
         // Once per movement command. 'offset' is the head relative to the
         // body and 'body' the body position, both in world units. Returns
         // true with the wish velocity that walks the body toward the head.
-        // 'groundAt(offset)' is only asked when everything else allows it.
-        template <typename GroundAt>
+        // It follows wherever the head goes, off an edge included: a body
+        // left standing on a ledge the head had walked off did not fall.
         bool Command(double now, const Vector& offset, const Vector& body, bool stickWalking,
-                     bool crouchHeld, GroundAt&& groundAt, Vector& wish) {
+                     bool crouchHeld, Vector& wish) {
             if (stickWalking)
                 stickUntil = now + StickHoldSeconds;
             if (!crouchHeld) {
@@ -152,8 +154,9 @@ namespace Roomscale {
                 blocked = false;
             }
             const float distance = Length2D(offset);
-            if (!ShouldFollow(distance, following) || std::fabs(verticalSpeed) > MaxVerticalSpeed
-                || !groundAt(offset)) {
+            const bool wanted = urgent ? std::isfinite(distance) && distance >= UrgentDistance
+                : ShouldFollow(distance, following);
+            if (!wanted || std::fabs(verticalSpeed) > MaxVerticalSpeed) {
                 following = false;
                 return false;
             }

@@ -504,9 +504,18 @@ void VR::SubmitVRTextures()
         return;
 
     const bool eyeFrame = m_RenderedNewFrame && m_CreatedVRTextures;
+    // One skipped world frame is not worth reacting to: the compositor
+    // reprojects the last one, and the flat screen must not flash up.
+    if (eyeFrame)
+        m_FramesWithoutScene = 0;
+    else if (m_FramesWithoutScene < 3)
+        ++m_FramesWithoutScene;
+    const bool sceneMissing = m_FramesWithoutScene >= 3;
     if (m_Overlay)
     {
-        if ((!eyeFrame || m_Game->IsCursorVisible()) && kEnableVrMenuSubmission)
+        // The stock menu, and any frame without a rendered world (loading
+        // screens, startup), is shown as the desktop frame on a flat screen.
+        if ((sceneMissing || m_Game->IsCursorVisible()) && kEnableVrMenuSubmission)
         {
             if (!m_Overlay->IsOverlayVisible(m_MainMenuHandle))
                 RepositionOverlays();
@@ -531,17 +540,16 @@ void VR::SubmitVRTextures()
     }
 
     // A frame without a rendered world (loading screen, startup, a menu with
-    // no map behind it) is already on the menu panel. Submitting the flat
+    // no map behind it) is already on the flat screen. Submitting the flat
     // backbuffer to the eyes as well stretched it across the whole view,
     // locked to the face. Fade the scene out to a black compositor background
-    // instead, so only the panel is visible until the world is back.
+    // instead, so only the screen is visible until the world is back.
     constexpr float sceneFadeSeconds = 0.25f;
     const auto now = GetTickCount64();
     vr::EVRCompositorError left = vr::VRCompositorError_None;
     vr::EVRCompositorError right = vr::VRCompositorError_None;
     if (eyeFrame)
     {
-        m_FramesWithoutScene = 0;
         if (m_SceneHidden)
         {
             compositor->FadeGrid(sceneFadeSeconds, false);
@@ -557,9 +565,7 @@ void VR::SubmitVRTextures()
         left = compositor->Submit(vr::Eye_Left, &m_VKLeftEye.m_VRTexture, &m_TextureBounds[0]);
         right = compositor->Submit(vr::Eye_Right, &m_VKRightEye.m_VRTexture, &m_TextureBounds[1]);
     }
-    // One skipped world frame is not worth a fade: the compositor reprojects
-    // the last one.
-    else if (!m_SceneHidden && ++m_FramesWithoutScene >= 3)
+    else if (!m_SceneHidden && sceneMissing)
     {
         compositor->FadeToColor(0.0f, 0.0f, 0.0f, 0.0f, 1.0f, true);
         compositor->FadeGrid(sceneFadeSeconds, true);
@@ -652,7 +658,7 @@ void VR::SubmitVRTextures()
             m_HmdPose.isValid ? m_HmdPose.TrackedDevicePos.z : -1.0f,
             m_StandingHeightValid ? m_StandingHeight : -1.0f,
             m_PhysicalCrouchHeld ? 1 : 0,
-            PhysicalDuckViewCompensation(m_SetupOrigin), IsButtonCrouchHeld() ? 1 : 0,
+            m_DuckCompensation, IsButtonCrouchHeld() ? 1 : 0,
             m_EngineStandEyeValid ? m_EngineStandEyeZ : -1.0f);
     }
     m_RenderedNewFrame = false;
@@ -706,42 +712,42 @@ void VR::RepositionOverlays()
         return;
     const vr::HmdMatrix34_t& hmdMat = hmdPose.mDeviceToAbsoluteTracking;
 
-    // Present the menu as a VR panel at eye height a short reach in front of
-    // the user, instead of a distant flatscreen window. It is placed from
-    // where the head is when the menu opens and then stays in the environment
-    // (it does not follow the face); recentering places it again. Anchoring
-    // to the recenter point instead put the panel behind or beside anyone who
-    // had walked away from that point.
+    // The stock menu is a flat screen in front of the user, as it always
+    // was, but near enough to read: the menu's text is only about one
+    // percent of the screen's height at desktop resolutions. It is placed
+    // from where the head is when it appears and then stays put (it does not
+    // follow the face); recentering or pausing again places it afresh.
     Vector anchor(hmdMat.m[0][3], hmdMat.m[1][3], hmdMat.m[2][3]);
 
     Vector hmdForward = { -hmdMat.m[0][2], 0, -hmdMat.m[2][2] };
     hmdForward[1] = 0;
     if (VectorNormalize(hmdForward) < 1e-3f)
-        return; // Gaze is vertical; keep the previous panel placement.
+        return; // Gaze is vertical; keep the previous placement.
 
-    const float distance = std::isfinite(m_MenuPanelDistance)
-        ? std::clamp(m_MenuPanelDistance, 0.3f, 2.0f) : 0.7f;
-    const float width = std::isfinite(m_MenuPanelWidth)
-        ? std::clamp(m_MenuPanelWidth, 0.3f, 3.0f) : 1.0f;
+    const float distance = std::isfinite(m_MenuScreenDistance)
+        ? std::clamp(m_MenuScreenDistance, 0.5f, 3.0f) : 1.0f;
+    const float width = std::isfinite(m_MenuScreenWidth)
+        ? std::clamp(m_MenuScreenWidth, 0.5f, 4.0f) : 1.6f;
 
-    Vector panelPos = anchor + hmdForward * distance;
-    panelPos.y = anchor.y - 0.12f;
+    Vector screenPos = anchor + hmdForward * distance;
+    // Slightly below eye level, where Portal keeps its menu entries.
+    screenPos.y = anchor.y - 0.05f * distance;
 
     const float hmdRotation = atan2f(hmdMat.m[0][2], hmdMat.m[2][2]);
     const float cosYaw = cosf(hmdRotation);
     const float sinYaw = sinf(hmdRotation);
     vr::HmdMatrix34_t menuTransform =
     {
-        cosYaw, 0.0f, sinYaw, panelPos.x,
-        0.0f, 1.0f, 0.0f, panelPos.y,
-        -sinYaw, 0.0f, cosYaw, panelPos.z
+        cosYaw, 0.0f, sinYaw, screenPos.x,
+        0.0f, 1.0f, 0.0f, screenPos.y,
+        -sinYaw, 0.0f, cosYaw, screenPos.z
     };
 
     vr::ETrackingUniverseOrigin trackingOrigin = vr::VRCompositor()->GetTrackingSpace();
     vr::VROverlay()->SetOverlayTransformAbsolute(m_MainMenuHandle, trackingOrigin, &menuTransform);
     vr::VROverlay()->SetOverlayWidthInMeters(m_MainMenuHandle, width);
-    // A close panel reads best flat; curvature belongs to distant screens.
-    vr::VROverlay()->SetOverlayCurvature(m_MainMenuHandle, 0.0f);
+    // A wide screen this close reads better with its edges turned in a little.
+    vr::VROverlay()->SetOverlayCurvature(m_MainMenuHandle, 0.15f);
 
     // Reposition HUD overlay
     /*vr::HmdMatrix34_t hudTransform =
@@ -787,10 +793,10 @@ void VR::UpdateAimMarker(bool eyeFrame)
     if (!m_Overlay || m_AimMarkerHandle == vr::k_ulOverlayHandleInvalid)
         return;
 
-    // m_PortalAimLastSeen is set while the portal gun is the equipped
-    // viewmodel, so bare hands in the first chambers get no marker.
+    // The marker follows the ray that both portal shots and pickups use.
+    // Before the gun is found it is the only sign of where the hand points.
     bool show = m_AimMode == 2 && eyeFrame && !m_EyeViewThroughPortal
-        && m_PortalAimLastSeen != 0 && m_HmdPose.isValid && m_RightControllerPose.isValid
+        && m_HmdPose.isValid && m_RightControllerPose.isValid
         && m_Game->IsInGame() && !m_Game->IsCursorVisible();
     vr::HmdMatrix34_t transform{};
     float width = 0.0f;
@@ -811,8 +817,7 @@ void VR::UpdateAimMarker(bool eyeFrame)
         const vr::HmdMatrix34_t& hmd = m_Poses[vr::k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking;
         const Vector eyeTracking(hmd.m[0][3] + hmd.m[0][2] * m_EyeZ,
             hmd.m[1][3] + hmd.m[1][2] * m_EyeZ, hmd.m[2][3] + hmd.m[2][2] * m_EyeZ);
-        Vector eyeWorld = GetViewOrigin(m_SetupOrigin);
-        eyeWorld.z += PhysicalDuckViewCompensation(m_SetupOrigin);
+        const Vector eyeWorld = GetViewOrigin(m_SetupOrigin);
         Vector marker;
         show = AimMarker::WorldToTracking(m_AimPos, eyeWorld, eyeTracking,
             m_RotationOffset.y, m_VRScale, marker);
@@ -886,39 +891,44 @@ Vector VR::RoomscaleOffset() const
     return offset * m_VRScale;
 }
 
-bool VR::RoomscaleGroundAt(const Vector& offset)
-{
-    auto* player = m_Game->GetLocalPortalPlayer();
-    if (!player)
-        return false;
-
-    // Probe below the spot the body would walk to. Open air there is a ledge:
-    // the head may lean out over it, but only the stick walks off it.
-    const Vector start(m_SetupOrigin.x + offset.x, m_SetupOrigin.y + offset.y, m_SetupOrigin.z);
-    const float half = Roomscale::GroundProbeHalfWidth;
-    Ray_t ray{};
-    ray.Init(start, start - Vector(0, 0, Roomscale::GroundProbeDepth),
-        Vector(-half, -half, -1.0f), Vector(half, half, 1.0f));
-    CGameTrace trace;
-    trace.fraction = 1.0f;
-    trace.startsolid = trace.allsolid = false;
-    CTraceFilterSkipEntity filter(reinterpret_cast<IHandleEntity*>(player), 0);
-    constexpr unsigned mask = CONTENTS_SOLID | CONTENTS_WINDOW | CONTENTS_GRATE | CONTENTS_MOVEABLE;
-    if (!m_Game->TraceRay(ray, mask, &filter, &trace))
-        return true;
-    // Starting inside something is a wall, which the engine blocks by itself.
-    return trace.startsolid || trace.allsolid || trace.fraction < 1.0f;
-}
-
 bool VR::RoomscaleMove(bool stickWalking, float& forwardMove, float& sideMove)
 {
     forwardMove = sideMove = 0.0f;
     Vector wish;
-    if (!m_RoomscaleFollow.Command(RoomscaleSeconds(), RoomscaleOffset(), m_SetupOrigin,
-            stickWalking, IsCrouchHeld(),
-            [this](const Vector& offset) { return RoomscaleGroundAt(offset); }, wish))
+    const double now = RoomscaleSeconds();
+    const Vector offset = RoomscaleOffset();
+    // The last rendered eyes were through a portal the body has not crossed.
+    m_RoomscaleFollow.urgent = m_EyeViewThroughPortal;
+    const bool wasFollowing = m_RoomscaleFollow.following;
+    const bool follow = m_RoomscaleFollow.Command(now, offset, m_SetupOrigin,
+            stickWalking, IsCrouchHeld(), wish);
+    // A short record of what the follow did and why it did not, so a play
+    // session's log can show whether it ran. Changes only, and capped.
+    {
+        const float distance = Roomscale::Length2D(offset);
+        const char* state = follow ? "following"
+            : distance < Roomscale::StartDistance ? "idle"
+            : !m_RoomscaleFollow.originValid ? "inactive"
+            : now < m_RoomscaleFollow.stickUntil ? "waiting for stick"
+            : m_RoomscaleFollow.blocked ? "blocked"
+            : fabsf(m_RoomscaleFollow.verticalSpeed) > Roomscale::MaxVerticalSpeed ? "airborne" : "idle";
+        static const char* lastState = nullptr;
+        static unsigned reports = 0;
+        if (state != lastState && reports < 200)
+        {
+            ++reports;
+            PortalVrLog("Roomscale follow %s distance=%f urgent=%d speed=%f offset=%f,%f body=%f,%f,%f",
+                state, distance, m_RoomscaleFollow.urgent, wasFollowing || follow ? m_RoomscaleFollow.commandSpeed : 0.0f,
+                offset.x, offset.y, m_SetupOrigin.x, m_SetupOrigin.y, m_SetupOrigin.z);
+            lastState = state;
+        }
+    }
+    if (!follow)
         return false;
-    return Roomscale::WishToMoves(wish, m_HmdForward, m_HmdRight, forwardMove, sideMove);
+    // The engine builds its move axes from the command's view angles.
+    Vector forward, right;
+    QAngle::AngleVectors(EngineViewAngles(), &forward, &right, nullptr);
+    return Roomscale::WishToMoves(wish, forward, right, forwardMove, sideMove);
 }
 
 void VR::UpdateRoomscaleFollow()
@@ -968,12 +978,15 @@ void VR::GetPoses()
     // roles. Roles can return invalid indices on Quest 3 while the bound pose
     // actions still track; keep roles only as a fallback for custom bindings
     // without poses or drivers that predate the Input system.
-    vr::VRActionHandle_t logicalLeftPose = m_LeftHanded ? m_ActionPoseRight : m_ActionPoseLeft;
-    vr::VRActionHandle_t logicalRightPose = m_LeftHanded ? m_ActionPoseLeft : m_ActionPoseRight;
+    m_PhysicalHandPoseValid[0] = GetPoseActionPose(m_ActionPoseLeft, m_PhysicalHandPose[0]);
+    m_PhysicalHandPoseValid[1] = GetPoseActionPose(m_ActionPoseRight, m_PhysicalHandPose[1]);
+    const int logicalLeft = m_LeftHanded ? 1 : 0;
     vr::TrackedDevicePose_t leftControllerPose{};
     vr::TrackedDevicePose_t rightControllerPose{};
-    const bool leftViaAction = GetPoseActionPose(logicalLeftPose, leftControllerPose);
-    const bool rightViaAction = GetPoseActionPose(logicalRightPose, rightControllerPose);
+    const bool leftViaAction = m_PhysicalHandPoseValid[logicalLeft];
+    const bool rightViaAction = m_PhysicalHandPoseValid[1 - logicalLeft];
+    if (leftViaAction) leftControllerPose = m_PhysicalHandPose[logicalLeft];
+    if (rightViaAction) rightControllerPose = m_PhysicalHandPose[1 - logicalLeft];
     if (!leftViaAction || !rightViaAction)
     {
         vr::TrackedDeviceIndex_t leftControllerIndex = m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand);
@@ -1121,6 +1134,7 @@ bool VR::HandleSettingsCommand(const char* command) {
         // not become a shot or pickup when the new action set becomes active.
         m_Game->ClientCmd_Unrestricted("-attack;-attack2;-use;-jump;-duck;-reload");
         m_UseCommandHeld=false;
+        for(bool& held : m_CommandHeld) held=false;
         m_LeftHanded=left;
         m_HandSwitchSuppressUntil=GetTickCount64()+500;
         m_GrabPoseValid=m_PickupAimValid=false;
@@ -1267,7 +1281,7 @@ bool VR::UpdateOptionalGunSupport(matrix3x4_t *target)
 {
     // Without visible hands there is nothing to seat on the gun: the grip
     // stays a plain crouch button and support never engages.
-    if (!m_ShowHands)
+    if (!m_ShowArms)
     {
         m_OptionalSupportActive = false;
         return false;
@@ -1390,46 +1404,25 @@ void VR::ProcessInput()
     // and Crouch. CreateMove mirrors the same actions into the usercmd
     // buttons, so a missed console-command tick cannot drop a shot, jump,
     // duck, or pickup. The commands below keep legacy key state in sync.
-    if (IsPrimaryAttackHeld())
+    // Only a change is sent. Repeating every command every frame put several
+    // hundred console commands a second through the engine's command buffer.
+    const auto mirror = [this](bool held, bool& sent, const char* press, const char* release)
     {
-        m_Game->ClientCmd_Unrestricted("+attack");
-    }
-    else
-    {
-        m_Game->ClientCmd_Unrestricted("-attack");
-    }
-
-    if (IsSecondaryAttackHeld())
-    {
-        m_Game->ClientCmd_Unrestricted("+attack2");
-    }
-    else
-    {
-        m_Game->ClientCmd_Unrestricted("-attack2");
-    }
-
-    if (IsJumpHeld())
-    {
-        m_Game->ClientCmd_Unrestricted("+jump");
-    }
-    else
-    {
-        m_Game->ClientCmd_Unrestricted("-jump");
-    }
+        if (held == sent)
+            return;
+        m_Game->ClientCmd_Unrestricted(held ? press : release);
+        sent = held;
+    };
+    mirror(IsPrimaryAttackHeld(), m_CommandHeld[0], "+attack", "-attack");
+    mirror(IsSecondaryAttackHeld(), m_CommandHeld[1], "+attack2", "-attack2");
+    mirror(IsJumpHeld(), m_CommandHeld[2], "+jump", "-jump");
 
     // The saved Pico/Touch mapping shares grip with crouch. Consume the
     // button only during the deliberate gun support gesture. An IRL headset
     // drop always crouches, independent of that button, so roomscale ducking
     // works even while two-handing the gun.
     UpdateOptionalGunSupport();
-    if (IsCrouchHeld())
-    {
-        m_Game->ClientCmd_Unrestricted("+duck");
-    }
-    else
-    {
-        m_Game->ClientCmd_Unrestricted("-duck");
-    }
+    mirror(IsCrouchHeld(), m_CommandHeld[3], "+duck", "-duck");
 
     // Keep the normal Source input state in sync, but only emit the console
     // command on an edge. CreateMove also mirrors this state into IN_USE so
@@ -1446,14 +1439,7 @@ void VR::ProcessInput()
         m_UseCommandHeld = useHeld;
     }
 
-    if (PressedDigitalAction(m_ActionReload))
-    {
-        m_Game->ClientCmd_Unrestricted("+reload");
-    }
-    else
-    {
-        m_Game->ClientCmd_Unrestricted("-reload");
-    }
+    mirror(PressedDigitalAction(m_ActionReload), m_CommandHeld[4], "+reload", "-reload");
 
     if (PressedDigitalAction(m_ActionPrevItem, true))
     {
@@ -1587,17 +1573,21 @@ bool VR::CheckOverlayIntersectionForController(vr::VROverlayHandle_t overlayHand
 {
     vr::TrackedDeviceIndex_t deviceIndex = m_System->GetTrackedDeviceIndexForControllerRole(controllerRole);
 
-    if (deviceIndex == vr::k_unTrackedDeviceIndexInvalid)
+    const bool viaRole = deviceIndex < vr::k_unMaxTrackedDeviceCount && m_Poses[deviceIndex].bPoseIsValid;
+    // Controller roles can be missing (Quest 3) while the bound hand poses
+    // still track. Without this fallback the laser never switched on.
+    const int hand = controllerRole == vr::TrackedControllerRole_LeftHand ? 0 : 1;
+    if (!viaRole && !m_PhysicalHandPoseValid[hand])
         return false;
 
-    vr::TrackedDevicePose_t &controllerPose = m_Poses[deviceIndex];
-
-    if (!controllerPose.bPoseIsValid)
-        return false;
-
-    VMatrix controllerVMatrix = VMatrixFromHmdMatrix(controllerPose.mDeviceToAbsoluteTracking);
-    VMatrix tipVMatrix        = VMatrixFromHmdMatrix(GetControllerTipMatrix(controllerRole));
-    tipVMatrix.MatrixMul(controllerVMatrix, controllerVMatrix);
+    VMatrix controllerVMatrix = VMatrixFromHmdMatrix(viaRole
+        ? m_Poses[deviceIndex].mDeviceToAbsoluteTracking
+        : m_PhysicalHandPose[hand].mDeviceToAbsoluteTracking);
+    if (viaRole)
+    {
+        VMatrix tipVMatrix = VMatrixFromHmdMatrix(GetControllerTipMatrix(controllerRole));
+        tipVMatrix.MatrixMul(controllerVMatrix, controllerVMatrix);
+    }
 
     vr::VROverlayIntersectionParams_t  params  = {0};
     vr::VROverlayIntersectionResults_t results = {0};
@@ -1639,6 +1629,7 @@ Vector VR::GetRightControllerAbsPos(Vector eyePosition)
     if (m_6DOF)
         position += m_HmdPosRelative;
 
+    position.z += m_DuckCompensation;
     return position + m_CameraCollisionOffset;
 }
 
@@ -1703,9 +1694,9 @@ void VR::ResetPosition()
     m_CalibrationDrift.Reset();
     m_CalibrationStability.Reset();
     m_CalibrationSuppressUntil = GetTickCount64()+10000;
-    // A recenter also re-anchors an open menu: the environment viewpoint is
-    // recomputed from the current scripted camera and the panel follows the
-    // playspace to its new room location.
+    // A recenter also re-anchors an open menu: the menu-scene viewpoint is
+    // found again from the current scripted camera and the flat screen is
+    // placed in front of the head again.
     m_MenuReanchorRequested = true;
     if (m_Overlay && m_MainMenuHandle != vr::k_ulOverlayHandleInvalid
         && m_Overlay->IsOverlayVisible(m_MainMenuHandle))
@@ -1810,11 +1801,42 @@ float VR::PhysicalDuckViewCompensation(const Vector& setupOrigin)
     // camera gets the engine's eye dip back, cancelling the double dip. With
     // the button also held this stays classic (no compensation). Bounded so a
     // teleport-while-crouched cannot fling the camera; standing re-snaps.
-    if (!m_PhysicalCrouchHeld || IsButtonCrouchHeld() || !m_EngineStandEyeValid)
+    if (IsButtonCrouchHeld())
+    {
+        m_PhysicalDuckView = false;
         return 0.0f;
-    if (!std::isfinite(setupOrigin.z))
+    }
+    // The menu scene stands the player on its own anchor; nothing ducks there.
+    if (m_MenuAnchorValid && !m_MenuAnchorIsPause)
+        return 0.0f;
+    if (m_PhysicalCrouchHeld)
+        m_PhysicalDuckView = true;
+    if (!m_PhysicalDuckView)
+        return 0.0f;
+    // Exact when the eye's height above the feet is known: Portal's eye
+    // stands at 64 units and ducks to 28.
+    constexpr float standingEye = 64.0f, duckDip = 36.0f;
+    if (m_EngineViewOffsetValid)
+    {
+        const float dip = std::clamp(standingEye - m_EngineViewOffsetZ, 0.0f, duckDip);
+        // Standing up IRL releases the duck at once, but the engine's eye
+        // takes a moment to rise. Stopping here with the head made the view
+        // drop by what was left of the dip and then ride back up.
+        if (!m_PhysicalCrouchHeld && dip < 0.5f)
+            m_PhysicalDuckView = false;
+        return dip;
+    }
+    if (!m_PhysicalCrouchHeld)
+        m_PhysicalDuckView = false;
+    if (!m_PhysicalCrouchHeld || !m_EngineStandEyeValid || !std::isfinite(setupOrigin.z))
         return 0.0f;
     return std::clamp(m_EngineStandEyeZ - setupOrigin.z, 0.0f, 48.0f);
+}
+
+void VR::SetEngineViewOffset(bool valid, float offsetZ)
+{
+    m_EngineViewOffsetValid = valid && std::isfinite(offsetZ) && offsetZ > -16.0f && offsetZ < 96.0f;
+    m_EngineViewOffsetZ = m_EngineViewOffsetValid ? offsetZ : 0.0f;
 }
 
 void VR::UpdateAutoCalibration()
@@ -1911,8 +1933,11 @@ void VR::SnapshotGrabPose()
     // Carry forward from the visible wrist in the same aim orientation as the
     // gun. The uncorrected grip direction is 30 degrees higher on this binding.
     m_GrabControllerAng = PickupTrace::CarryAngles(m_RightControllerForward,m_RightControllerUp);
+    // The server rebuilds these from its own eye angles, which are the
+    // command's: the same roll-free angles must frame them here.
+    const QAngle head = EngineViewAngles();
     m_GrabHandRelative = PortalPose::RelativeHand(
-        m_GrabControllerPos - m_SetupOrigin, m_GrabControllerAng, m_HmdAngAbs);
+        m_GrabControllerPos - m_SetupOrigin, m_GrabControllerAng, head);
     // Selection follows the visible gun's centerline. Carry physics continues
     // to use the wrist snapshot above, so acquiring a prop does not move it.
     Vector aimOrigin,aimDirection;
@@ -1921,7 +1946,7 @@ void VR::SnapshotGrabPose()
         QAngle aimAngles;
         QAngle::VectorAngles(aimDirection,m_RightControllerUp,aimAngles);
         m_PickupAimRelative = PortalPose::RelativeHand(
-            aimOrigin-m_SetupOrigin,aimAngles,m_HmdAngAbs);
+            aimOrigin-m_SetupOrigin,aimAngles,head);
     }
 }
 
@@ -2108,6 +2133,7 @@ Vector VR::GetViewOrigin(Vector setupOrigin)
     if (m_6DOF)
         center += m_HmdPosRelative;
 
+    center.z += m_DuckCompensation;
     return center + (m_HmdForward * -(m_EyeZ * m_VRScale)) + m_CameraCollisionOffset;
 }
 
@@ -2116,6 +2142,11 @@ void VR::UpdateCameraCollision(Vector setupOrigin)
     // Always solve from the engine's current player eye position. Never move
     // the tracking origin: leaning back, respawning, or portalling must recover.
     m_CameraCollisionOffset = { 0, 0, 0 };
+    // The sweep starts at the engine eye, which is inside the (ducked) hull,
+    // and ends at the camera with the compensation applied. A crawlspace
+    // therefore holds the view down instead of letting it rise into the roof.
+    UpdateEngineStandEye(setupOrigin);
+    m_DuckCompensation = PhysicalDuckViewCompensation(setupOrigin);
     auto* player = m_Game->GetLocalPortalPlayer();
     if (!player)
     {
@@ -2124,7 +2155,6 @@ void VR::UpdateCameraCollision(Vector setupOrigin)
     }
 
     const Vector desired = GetViewOrigin(setupOrigin);
-    UpdateEngineStandEye(setupOrigin);
     const float radius = CameraCollision::HullRadius(m_Ipd * m_IpdScale * m_VRScale, m_Fov, m_Aspect);
     const Vector extent(radius, radius, radius);
     Ray_t ray{};
@@ -2198,65 +2228,160 @@ void VR::UpdateCameraCollision(Vector setupOrigin)
     m_CameraBlocked = blocked;
 }
 
+void VR::NoteGameplayView(const Vector& origin)
+{
+    ClearMenuAnchor();
+    const std::uint64_t now = GetTickCount64();
+    if (m_LastGameplayTime == 0 || now - m_LastGameplayTime > 500)
+        m_GameplaySince = now;
+    m_LastGameplayOrigin = origin;
+    m_LastGameplayTime = now;
+}
+
 bool VR::UpdateMenuAnchor(const Vector& scriptedOrigin)
 {
+    const bool finite = std::isfinite(scriptedOrigin.x) && std::isfinite(scriptedOrigin.y) && std::isfinite(scriptedOrigin.z);
+    // A paused game keeps following the player's own (frozen) eye.
+    if (m_MenuAnchorValid && m_MenuAnchorIsPause)
+    {
+        m_MenuReanchorRequested = false;
+        if (finite)
+            m_MenuAnchor = scriptedOrigin;
+        return true;
+    }
     if (m_MenuAnchorValid && !m_MenuReanchorRequested)
         return true;
     m_MenuReanchorRequested = false;
 
     // Refuse to anchor from a degenerate camera; keep the previous anchor, or
     // the scripted origin when no anchor exists yet.
-    if (!std::isfinite(scriptedOrigin.x) || !std::isfinite(scriptedOrigin.y) || !std::isfinite(scriptedOrigin.z))
+    if (!finite)
         return m_MenuAnchorValid;
 
-    // Freeze the scripted menu camera into a standing viewpoint: keep its
-    // horizontal position and snap the height to a standing eye above the
-    // floor below it. This needs no player entity, so it also covers menus
-    // without a local player. A configured spawn is the fallback when no
-    // floor is found (camera over the void or embedded in solid); it never
-    // hijacks a working viewpoint such as the in-game pause menu. Falls back
-    // to the raw scripted origin when neither is available.
-    const bool spawnConfigured = std::isfinite(m_MenuSpawn.x) && std::isfinite(m_MenuSpawn.y) && std::isfinite(m_MenuSpawn.z)
-        && m_MenuSpawn.LengthSqr() > 0.0001f;
-    Vector anchor = scriptedOrigin;
-    const char* source = "scripted";
-    bool floorFound = false;
+    // The menu opened over a game that had been running, from where its
+    // view already was: that is a pause, not the menu scene. Moving the view
+    // to a floor below would jump it on every pause, most of all in mid-air
+    // or while ducked. (The menu scene's camera cannot be told apart by
+    // position: Portal's background maps park it at the player start.)
+    const std::uint64_t now = GetTickCount64();
+    const bool overRunningGame = m_LastGameplayTime != 0 && now - m_LastGameplayTime < 500
+        && m_LastGameplayTime - m_GameplaySince > 1000
+        && (scriptedOrigin - m_LastGameplayOrigin).LengthSqr() < 32.0f * 32.0f;
+    if (!m_MenuAnchorValid && overRunningGame)
+    {
+        m_MenuAnchor = scriptedOrigin;
+        m_MenuAnchorValid = m_MenuAnchorIsPause = true;
+        PortalVrLog("VR menu anchor=%f,%f,%f source=pause", m_MenuAnchor.x, m_MenuAnchor.y, m_MenuAnchor.z);
+        return true;
+    }
+
+    constexpr float eyeHeight = 64.0f;
+    constexpr unsigned mask = CONTENTS_SOLID | CONTENTS_WINDOW | CONTENTS_GRATE | CONTENTS_MOVEABLE;
     IEngineTrace* engineTrace = m_Game ? m_Game->GetEngineTrace() : nullptr;
+    // A scripted camera that is already at about head height over a floor is
+    // a place to stand: leave it exactly where the map put it. Portal's
+    // second menu scene (after the ending) is like this, its camera 77 units
+    // over the floor; the first one hangs 221 units up. The scene's frozen
+    // player stands around the camera, so this one trace must pass through it.
     if (engineTrace)
     {
-        // Walk down through roof layers: an aerial menu camera first hits the
-        // room's roof (surface facing down), not the floor. Step below each
-        // such layer and keep looking for an upward-facing walkable surface.
-        constexpr unsigned mask = CONTENTS_SOLID | CONTENTS_WINDOW | CONTENTS_GRATE | CONTENTS_MOVEABLE;
-        Vector probe = anchor;
-        for (int layer = 0; layer < 6 && !floorFound; ++layer)
+        Ray_t ray{};
+        ray.Init(scriptedOrigin, scriptedOrigin - Vector(0, 0, 128.0f));
+        CGameTrace below;
+        below.fraction = 1.0f;
+        below.startsolid = below.allsolid = false;
+        CTraceFilterSkipEntity filter(reinterpret_cast<IHandleEntity*>(m_Game->GetLocalPortalPlayer()), 0);
+        engineTrace->TraceRay(ray, mask, &filter, &below);
+        const float height = below.fraction * 128.0f;
+        if (!below.startsolid && !below.allsolid && below.fraction < 1.0f
+            && below.plane.normal.z > 0.7f && height >= 32.0f && height <= 96.0f)
         {
-            Ray_t ray{};
-            ray.Init(probe, probe - Vector(0, 0, 512.0f));
-            CGameTrace trace{};
-            CTraceFilterSkipEntity filter(nullptr, 0);
-            engineTrace->TraceRay(ray, mask, &filter, &trace);
-            if (trace.fraction <= 0.0f || trace.fraction >= 1.0f || trace.startsolid || trace.allsolid)
-                break; // Void below, or embedded in solid: no floor this way.
-            if (trace.plane.normal.z > 0.7f)
-            {
-                anchor.z = trace.endpos.z + 64.0f;
-                source = "floor-snap";
-                floorFound = true;
-            }
-            else
-            {
-                probe = trace.endpos - Vector(0, 0, 128.0f);
-            }
+            m_MenuAnchor = scriptedOrigin;
+            m_MenuAnchorValid = true;
+            m_MenuAnchorIsPause = false;
+            PortalVrLog("VR menu anchor=%f,%f,%f source=standing height=%f",
+                m_MenuAnchor.x, m_MenuAnchor.y, m_MenuAnchor.z, height);
+            return true;
         }
     }
-    if (!floorFound && spawnConfigured)
+
+    // Otherwise stand the player inside the menu scene. The stock scripted
+    // camera can hang in the air or ride outside the room, so the floor
+    // straight below it can be far down, a roof, an outside ledge, or
+    // nothing. Take the first indoor floor with headroom: below the camera,
+    // else on a widening ring around it, else at the configured spawn. Falls
+    // back to the raw scripted origin when nothing is found.
+    const bool spawnConfigured = std::isfinite(m_MenuSpawn.x) && std::isfinite(m_MenuSpawn.y) && std::isfinite(m_MenuSpawn.z)
+        && m_MenuSpawn.LengthSqr() > 0.0001f;
+    const auto trace = [&](const Vector& from, const Vector& to, CGameTrace& result) {
+        Ray_t ray{};
+        ray.Init(from, to);
+        result.fraction = 1.0f;
+        result.startsolid = result.allsolid = false;
+        CTraceFilterSkipEntity filter(nullptr, 0);
+        engineTrace->TraceRay(ray, mask, &filter, &result);
+    };
+    // A standing eye above the floor below (x, y), starting from height z.
+    const auto probeFloor = [&](float x, float y, float z, Vector& out) -> bool {
+        if (!engineTrace)
+            return false;
+        Vector probe(x, y, z);
+        // Walk down through roof layers: an aerial camera first meets the
+        // room's roof, a surface facing down, not its floor.
+        for (int layer = 0; layer < 6; ++layer)
+        {
+            CGameTrace down;
+            trace(probe, probe - Vector(0, 0, 512.0f), down);
+            if (down.fraction <= 0.0f || down.fraction >= 1.0f || down.startsolid || down.allsolid)
+                return false; // Void below, or embedded in solid.
+            if (down.plane.normal.z <= 0.7f)
+            {
+                probe = down.endpos - Vector(0, 0, 128.0f);
+                continue;
+            }
+            const Vector candidate(x, y, down.endpos.z + eyeHeight);
+            // Room to stand, and a ceiling somewhere above: an outdoor roof
+            // or ledge has open sky over it.
+            CGameTrace headroom, ceiling;
+            trace(candidate, candidate + Vector(0, 0, 72.0f), headroom);
+            if (headroom.fraction < 1.0f || headroom.startsolid)
+                return false;
+            trace(candidate, candidate + Vector(0, 0, 1024.0f), ceiling);
+            if (ceiling.fraction >= 1.0f || ceiling.startsolid)
+                return false;
+            out = candidate;
+            return true;
+        }
+        return false;
+    };
+
+    Vector anchor = scriptedOrigin;
+    const char* source = "scripted";
+    bool found = probeFloor(scriptedOrigin.x, scriptedOrigin.y, scriptedOrigin.z, anchor);
+    if (found)
+        source = "floor-snap";
+    for (float radius : { 64.0f, 128.0f, 256.0f, 512.0f })
     {
-        anchor = m_MenuSpawn;
+        for (int step = 0; step < 8 && !found; ++step)
+        {
+            const float angle = step * (3.14159265358979323846f / 4.0f);
+            found = probeFloor(scriptedOrigin.x + cosf(angle) * radius,
+                scriptedOrigin.y + sinf(angle) * radius, scriptedOrigin.z, anchor);
+            if (found)
+                source = "search";
+        }
+    }
+    if (!found && spawnConfigured)
+    {
+        // Prefer a floor below the configured spawn; use it as written only
+        // when there is none.
+        if (!probeFloor(m_MenuSpawn.x, m_MenuSpawn.y, m_MenuSpawn.z, anchor))
+            anchor = m_MenuSpawn;
         source = "config";
     }
     m_MenuAnchor = anchor;
     m_MenuAnchorValid = true;
+    m_MenuAnchorIsPause = false;
     PortalVrLog("VR menu anchor=%f,%f,%f source=%s scripted=%f,%f,%f",
         m_MenuAnchor.x, m_MenuAnchor.y, m_MenuAnchor.z, source,
         scriptedOrigin.x, scriptedOrigin.y, scriptedOrigin.z);
@@ -2267,7 +2392,6 @@ Vector VR::GetViewOriginLeft(Vector setupOrigin)
 {
     Vector viewOriginLeft = GetViewOrigin(setupOrigin);
     viewOriginLeft -= m_HmdRight * ((m_Ipd * m_IpdScale * m_VRScale) / 2);
-    viewOriginLeft.z += PhysicalDuckViewCompensation(setupOrigin);
 
     return viewOriginLeft;
 }
@@ -2276,7 +2400,6 @@ Vector VR::GetViewOriginRight(Vector setupOrigin)
 {
     Vector viewOriginRight = GetViewOrigin(setupOrigin);
     viewOriginRight += m_HmdRight * ((m_Ipd * m_IpdScale * m_VRScale) / 2);
-    viewOriginRight.z += PhysicalDuckViewCompensation(setupOrigin);
 
     return viewOriginRight;
 }
@@ -2630,16 +2753,17 @@ void VR::ParseConfigFile()
     if (userConfig.count("PhysicalCrouchDrop")) parseOrDefault("PhysicalCrouchDrop", m_PhysicalCrouchDrop, 0.25f);
     m_PhysicalCrouchDrop = std::isfinite(m_PhysicalCrouchDrop)
         ? std::clamp(m_PhysicalCrouchDrop, 0.1f, 0.8f) : 0.25f;
-    // Hidden visibility toggle: optional like PhysicalCrouch so older
-    // configs load without a modal warning; the installer appends the default.
-    if (userConfig.count("ShowHands")) parseOrDefault("ShowHands", m_ShowHands, true);
+    // The arm models are opt-in. This replaces ShowHands, which defaulted
+    // to drawing them and is no longer read: a config written by an earlier
+    // installer would otherwise keep the arms.
+    if (userConfig.count("ShowArms")) parseOrDefault("ShowArms", m_ShowArms, false);
     // Roomscale body-follow, optional for the same reason.
     if (userConfig.count("Roomscale")) parseOrDefault("Roomscale", m_Roomscale, true);
     /*parseOrDefault("HudDistance", m_HudDistance, 1.3f);
     parseOrDefault("HudSize", m_HudSize, 4.0f);
     parseOrDefault("HudAlwaysVisible", m_HudAlwaysVisible, false);*/
     parseOrDefault("AimMode", m_AimMode, 2);
-    parseOrDefault("FirstPersonBody", m_FirstPersonBody, true);
+    parseOrDefault("FirstPersonBody", m_FirstPersonBody, false);
     parseOrDefault("FirstPersonBodyHideUpper", m_FirstPersonBodyHideUpper, true);
     parseOrDefault("LeftHandGunGrip", m_LeftHandGunGrip, true);
     parseOrDefault("LeftHandGunGripRadius", m_LeftHandGunGripRadius, 6.0f);
@@ -2650,12 +2774,17 @@ void VR::ParseConfigFile()
         ? std::clamp(m_FirstPersonBodyBackOffset, 0.0f, 24.0f) : 8.0f;
     parseOrDefault("AntiAliasing", m_AntiAliasing, 0);
     parseOrDefault("RenderWindow", m_RenderWindow, 0);
-    // Menu-environment viewpoint and VR panel. MenuSpawn (0,0,0) disables
-    // the fallback: the automatic anchor is the scripted camera's horizontal
-    // position with the height snapped to a standing eye above the floor.
-    parseXYZOrDefaultZero("MenuSpawn", m_MenuSpawn);
-    parseOrDefault("MenuPanelDistance", m_MenuPanelDistance, 0.7f);
-    parseOrDefault("MenuPanelWidth", m_MenuPanelWidth, 1.0f);
+    // Menu-scene viewpoint fallback and the flat menu screen. All optional:
+    // MenuSpawn (0,0,0) leaves the fallback off, and the earlier
+    // MenuPanelDistance/MenuPanelWidth keys are no longer read (their values
+    // described a much smaller panel).
+    for (const char* key : { "MenuSpawnX", "MenuSpawnY", "MenuSpawnZ" })
+    {
+        float& target = key[9] == 'X' ? m_MenuSpawn.x : key[9] == 'Y' ? m_MenuSpawn.y : m_MenuSpawn.z;
+        if (userConfig.count(key)) parseOrDefault(key, target, 0.0f);
+    }
+    if (userConfig.count("MenuScreenDistance")) parseOrDefault("MenuScreenDistance", m_MenuScreenDistance, 1.0f);
+    if (userConfig.count("MenuScreenWidth")) parseOrDefault("MenuScreenWidth", m_MenuScreenWidth, 1.6f);
     parseXYZOrDefaultZero("ViewmodelPosCustomOffset", m_ViewmodelPosCustomOffset);
     parseXYZOrDefaultZero("ViewmodelAngCustomOffset", m_ViewmodelAngCustomOffset);
 

@@ -41,7 +41,6 @@ struct Scenario {
     std::function<float(double)> stick = [](double) { return 0.0f; };  // wish speed along the axis
     std::function<bool(double)> crouch = [](double) { return false; };
     float wall = -1.0f;
-    bool ground = true;
     double fps = 90.0, seconds = 6.0;
 };
 
@@ -78,7 +77,7 @@ Trace Run(const Scenario& scenario, bool withHead) {
             float command = 0.0f;
             if (follow.Command(t + 100.0, axis * (head - center), axis * client(t),
                     fabsf(scenario.stick(t)) > 1.0f, scenario.crouch(t),
-                    [&](const Vector&) { return scenario.ground; }, wish)) {
+                    wish)) {
                 command = wish.x * axis.x + wish.y * axis.y;
                 assert(fabsf(wish.x * axis.y - wish.y * axis.x) < 0.01f && wish.z == 0.0f);
                 assert(fabsf(command) <= Roomscale::MaxSpeed * Roomscale::SlowBoost::Factor + 0.01f);
@@ -175,23 +174,14 @@ unsigned TestFollow() {
         assert(outcome.blocked && fabsf(outcome.bodyEnd - 15.0f) < 0.01f && outcome.maxError < 1.0f);
         ++scenarios;
     }
-    // No ground under the head: the body stays on the ledge.
-    {
-        Scenario s{ Step(1.0f, 1.0) };
-        s.ground = false;
-        const Outcome outcome = Measure(s);
-        assert(outcome.bodyEnd == 0.0f && outcome.maxError < 0.5f && !outcome.blocked);
-        ++scenarios;
-    }
 
     // Not usable (menu, lost tracking) forgets everything, and a teleport or
     // movement nobody commanded is never handed over.
     Roomscale::Follow follow;
-    const auto ground = [](const Vector&) { return true; };
     Vector wish;
-    assert(!follow.Command(100.0, { 20, 0, 0 }, { 0, 0, 0 }, false, false, ground, wish));
+    assert(!follow.Command(100.0, { 20, 0, 0 }, { 0, 0, 0 }, false, false, wish));
     assert(follow.Credit(100.0, true, { 0, 0, 0 }, { 20, 0, 0 }).LengthSqr() == 0.0f);
-    assert(follow.Command(100.01, { 20, 0, 0 }, { 0, 0, 0 }, false, false, ground, wish));
+    assert(follow.Command(100.01, { 20, 0, 0 }, { 0, 0, 0 }, false, false, wish));
     assert(wish.x > 0.0f && wish.y == 0.0f && follow.following);
     assert(follow.Credit(100.02, true, { 500, 0, 0 }, { 20, 0, 0 }).LengthSqr() == 0.0f);
     const Vector covered = follow.Credit(100.03, true, { 501, 0, 0 }, { 20, 0, 0 });
@@ -199,13 +189,27 @@ unsigned TestFollow() {
     assert(follow.Credit(100.04, true, { 500, 0, 0 }, { 19, 0, 0 }).LengthSqr() == 0.0f);
     // Later movement the follow did not command, even along the same line.
     assert(follow.Credit(100.2, true, { 505, 0, 0 }, { 19, 0, 0 }).LengthSqr() == 0.0f);
-    assert(follow.Command(100.51, { 19, 0, 0 }, { 505, 0, 0 }, true, false, ground, wish) == false);
-    assert(follow.Command(100.8, { 19, 0, 0 }, { 505, 0, 0 }, false, false, ground, wish) == false);
-    assert(follow.Command(100.92, { 19, 0, 0 }, { 505, 0, 0 }, false, false, ground, wish));
+    assert(follow.Command(100.51, { 19, 0, 0 }, { 505, 0, 0 }, true, false, wish) == false);
+    assert(follow.Command(100.8, { 19, 0, 0 }, { 505, 0, 0 }, false, false, wish) == false);
+    assert(follow.Command(100.92, { 19, 0, 0 }, { 505, 0, 0 }, false, false, wish));
     follow.verticalSpeed = 400.0f;
-    assert(!follow.Command(100.93, { 19, 0, 0 }, { 505, 0, 0 }, false, false, ground, wish));
+    assert(!follow.Command(100.93, { 19, 0, 0 }, { 505, 0, 0 }, false, false, wish));
     follow.Credit(100.94, false, { 505, 0, 0 }, { 19, 0, 0 });
     assert(!follow.originValid && !follow.following && !follow.blocked);
+    // A head that is through a portal brings the body after it at once,
+    // without the dead zone that applies otherwise.
+    Roomscale::Follow crossing;
+    crossing.Credit(200.0, true, { 0, 0, 0 }, { 3, 0, 0 });
+    assert(!crossing.Command(200.01, { 3, 0, 0 }, { 0, 0, 0 }, false, false, wish));
+    crossing.urgent = true;
+    assert(crossing.Command(200.03, { 3, 0, 0 }, { 0, 0, 0 }, false, false, wish));
+    assert(wish.x >= Roomscale::MinSpeed && wish.y == 0.0f && crossing.following);
+    assert(!crossing.Command(200.04, { 0.5f, 0, 0 }, { 0, 0, 0 }, false, false, wish));
+    // The stick and a fall still take precedence.
+    assert(!crossing.Command(200.05, { 3, 0, 0 }, { 0, 0, 0 }, true, false, wish));
+    crossing.stickUntil = -1.0e9;
+    crossing.verticalSpeed = 400.0f;
+    assert(!crossing.Command(200.06, { 3, 0, 0 }, { 0, 0, 0 }, false, false, wish));
     return scenarios;
 }
 

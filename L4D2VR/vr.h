@@ -106,24 +106,28 @@ public:
  	std::uint64_t m_CalibrationTime = 0, m_CalibrationSuppressUntil = 0, m_LastCarryUpdate = 0;
  	Vector m_CalibrationPlayerPosition = {0,0,0};
  	void UpdateAutoCalibration();
-	// Menu-environment viewpoint. While a GameUI menu is open (main menu over
-	// the background map, or the in-game pause menu) the engine drives a
-	// scripted camera that can pan outside the room geometry. VR instead
-	// freezes a standing anchor inside the environment: horizontal position
-	// from the scripted camera, height snapped to a standing eye above the
-	// floor below it (punched through roof layers), or the configured spawn
-	// when no floor is found.
-	// Roomscale offsets and head collision are solved from the anchor like
-	// gameplay.
+	// Menu-scene viewpoint. Behind the main menu the engine drives a scripted
+	// camera through the background map, on a path that leaves the room. VR
+	// instead stands the player inside that room: on an indoor floor with
+	// headroom at or near the scripted camera, or at the configured spawn
+	// when none is found. Roomscale offsets and head collision are solved
+	// from that anchor like gameplay. Pausing a game keeps the player's own
+	// eye, so the view does not move when the menu opens.
 	Vector m_MenuAnchor = { 0, 0, 0 };
 	bool m_MenuAnchorValid = false;
+	bool m_MenuAnchorIsPause = false;
 	bool m_MenuReanchorRequested = true;
 	Vector m_MenuSpawn = { 0, 0, 0 }; // Source units; (0,0,0) disables the fallback.
-	float m_MenuPanelDistance = 0.7f; // Menu overlay meters in front of the head when it opens.
-	float m_MenuPanelWidth = 1.0f;    // Menu overlay meters wide.
+	Vector m_LastGameplayOrigin = { 0, 0, 0 };
+	std::uint64_t m_LastGameplayTime = 0, m_GameplaySince = 0;
 	bool UpdateMenuAnchor(const Vector& scriptedOrigin);
-	void ClearMenuAnchor() { m_MenuAnchorValid = false; }
+	void ClearMenuAnchor() { m_MenuAnchorValid = m_MenuAnchorIsPause = false; }
 	const Vector& MenuAnchorPosition() const { return m_MenuAnchor; }
+	void NoteGameplayView(const Vector& origin);
+	// The flat screen that carries the stock menu and loading screens: placed
+	// in front of the head when it appears, then left where it is.
+	float m_MenuScreenDistance = 1.0f; // Meters in front of the head.
+	float m_MenuScreenWidth = 1.6f;    // Meters wide.
 	Vector m_SetupOrigin = { 0,0,0 };
 	Vector m_CameraCollisionOffset = { 0,0,0 };
 	bool m_CameraBlocked = false;
@@ -136,7 +140,6 @@ public:
 	bool m_Roomscale = true;
 	Roomscale::Follow m_RoomscaleFollow;
 	Vector RoomscaleOffset() const;
-	bool RoomscaleGroundAt(const Vector& offset);
 	bool RoomscaleMove(bool stickWalking, float& forwardMove, float& sideMove);
 	void UpdateRoomscaleFollow();
 
@@ -299,6 +302,8 @@ public:
 	QAngle m_ServerGrabAngles = { 0, 0, 0 };
 	void SnapshotGrabPose();
 	bool m_UseCommandHeld = false;
+	// What the console was last told for attack, attack2, jump, duck, reload.
+	bool m_CommandHeld[5] = {};
 	std::chrono::steady_clock::time_point m_PrevFrameTime;
 
 	float m_TurnSpeed = 0.15f;
@@ -337,17 +342,33 @@ public:
 	float m_EngineStandEyeZ = 0.0f;
 	bool m_EngineStandEyeValid = false;
 	void UpdateEngineStandEye(const Vector& setupOrigin);
+	// Height of the engine eye above the player's feet this frame, when the
+	// renderer could read it. It gives the duck dip exactly; the tracked
+	// standing eye above is the fallback and lags on stairs and lifts.
+	float m_EngineViewOffsetZ = 0.0f;
+	bool m_EngineViewOffsetValid = false;
+	void SetEngineViewOffset(bool valid, float offsetZ);
 	float PhysicalDuckViewCompensation(const Vector& setupOrigin);
+	// This frame's compensation. It raises the camera and the hands together
+	// and is part of the head-collision sweep.
+	float m_DuckCompensation = 0.0f;
+	// Set by an IRL crouch and kept until the engine's eye is standing
+	// again: the engine takes a moment to stand up after the head has.
+	bool m_PhysicalDuckView = false;
+	// What the engine is told about the head. Roll stays out: Portal lowers
+	// the eye toward the feet in proportion to view roll and steers rolled
+	// view angles back upright, both of which fight a tilted head.
+	QAngle EngineViewAngles() const { return QAngle(m_HmdAngAbs.x, m_HmdAngAbs.y, 0.0f); }
 	float m_HudDistance = 1.3f;
 	float m_HudSize = 4.0f;
 	bool m_HudAlwaysVisible = false;
 	int m_AimMode = 2;
-	bool m_FirstPersonBody = true;
+	bool m_FirstPersonBody = false;
 	bool m_FirstPersonBodyHideUpper = true;
-	// Show hand/arm models. False hides the bare hands and collapses the
-	// gun model's integrated arm into the receiver, leaving only the portal
-	// gun mesh. Aim, pickup, and muzzle logic are untouched.
-	bool m_ShowHands = true;
+	// Draw the stock arm models: the bare hands and the forearm inside the
+	// gun. Off by default, which leaves the portal gun alone in the gun hand.
+	// Aim, pickup, and muzzle logic are the same either way.
+	bool m_ShowArms = false;
 	float m_FirstPersonBodyBackOffset = 8.0f;
 
 	VR() {};
@@ -399,6 +420,10 @@ public:
 	bool GetAnalogActionData(vr::VRActionHandle_t &actionHandle, vr::InputAnalogActionData_t &analogDataOut);
 	void ResetPosition();
 	void GetPoseData(vr::TrackedDevicePose_t &poseRaw, TrackedDevicePoseData &poseOut);
+	// Physical left/right hand poses as SteamVR Input reported them this
+	// frame, for the menu laser when the legacy controller roles are missing.
+	vr::TrackedDevicePose_t m_PhysicalHandPose[2]{};
+	bool m_PhysicalHandPoseValid[2] = { false, false };
 	void ParseConfigFile();
 	void WaitForConfigUpdate();
 	Vector Trace(uint32_t* localPlayer);

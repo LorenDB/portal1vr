@@ -4,6 +4,7 @@
 #include <vector>
 #include <iterator>
 #include <limits>
+#include <string>
 #include "portalpose.h"
 #include "gunattachments.h"
 #include "guneffects.h"
@@ -24,6 +25,49 @@ int main(int argc,char **argv) {
     for(int i=0;i<45;++i) {
         matrix3x4_t inverse;memcpy(&inverse,data.data()+offset+i*216+96,sizeof(inverse));
         bind[i]=HandPose::InverseRigid(inverse);
+    }
+    // Gun-only drawing collapses bones 0-23 to a point. That hides the arm
+    // and nothing else only while the model keeps its three separate meshes:
+    // the arm on bones 6-23, the gun and its glass on bones 24 and up. The
+    // vertex file sits beside the model.
+    int gunVertices=0,armVertices=0;
+    {
+        std::string vertexPath(argv[1]);
+        assert(vertexPath.size()>4);
+        vertexPath.replace(vertexPath.size()-4,4,".vvd");
+        std::ifstream vertexFile(vertexPath,std::ios::binary);
+        std::vector<unsigned char> vvd((std::istreambuf_iterator<char>(vertexFile)),{});
+        auto mdlInt=[&](size_t at){int v;memcpy(&v,data.data()+at,4);return v;};
+        auto vvdInt=[&](size_t at){int v;memcpy(&v,vvd.data()+at,4);return v;};
+        assert(vvd.size()>=64 && !memcmp(vvd.data(),"IDSV",4) && vvdInt(8)==mdlInt(8));
+        // One LOD and no fixups: vertices are stored in mesh order.
+        assert(vvdInt(12)==1 && vvdInt(48)==0);
+        const int vertexCount=vvdInt(16),vertexData=vvdInt(56);
+        assert(vertexData>=64 && size_t(vertexData)+size_t(vertexCount)*48<=vvd.size());
+        assert(mdlInt(204)==3 && mdlInt(232)==1);
+        const size_t texture=mdlInt(208),bodyPart=mdlInt(236);
+        assert(mdlInt(bodyPart+4)==1);
+        const size_t submodel=bodyPart+mdlInt(bodyPart+12);
+        const int meshCount=mdlInt(submodel+72);
+        assert(meshCount==3 && mdlInt(submodel+84)==0);
+        for(int mesh=0;mesh<meshCount;++mesh) {
+            const size_t record=submodel+mdlInt(submodel+76)+size_t(mesh)*116;
+            const int material=mdlInt(record),vertices=mdlInt(record+8),first=mdlInt(record+12);
+            assert(material>=0 && material<3 && first>=0 && first+vertices<=vertexCount);
+            const size_t nameRecord=texture+size_t(material)*64;
+            const bool arm=!strcmp(reinterpret_cast<const char*>(data.data()+nameRecord+mdlInt(nameRecord)),"v_hands");
+            for(int v=first;v<first+vertices;++v) {
+                const unsigned char* vertex=vvd.data()+vertexData+size_t(v)*48;
+                const int influences=vertex[15];
+                assert(influences>=1 && influences<=3);
+                for(int i=0;i<influences;++i) {
+                    const int bone=vertex[12+i];
+                    assert(arm ? bone>=6 && bone<24 : bone>=24 && bone<45);
+                }
+                (arm ? armVertices : gunVertices)++;
+            }
+        }
+        assert(armVertices>0 && gunVertices>armVertices);
     }
     GunAttachments::Model model;assert(model.Read(data.data(),data.size(),bind));
     assert(model.count==17);
@@ -207,5 +251,5 @@ int main(int argc,char **argv) {
     for(int i=0;i<20;++i){blue.origin.x=float(i*4);history.Record(blue,2300+i);}
     receivedBlue=blue;receivedBlue.origin.x=0;assert(!history.Restore(receivedBlue,2330));
     assert(history.Restore(blue,2330)); // bounded history retains recent shots
-    printf("{\"attachments\":%d,\"angle_poses\":%d,\"queries\":%d,\"maximum_matrix_error\":%.9f,\"range_checks\":%d,\"maximum_barrel_ray_error\":%.9f,\"pickup_barrel_checks\":%d,\"maximum_pickup_error_at_1024\":%.9f,\"blast_pose_checks_both_colors\":%d,\"support_pose_checks\":%d,\"passed\":true}\n",model.count,cases/model.count,cases,maxError,rangeCases,maxRayError,pickupCases,maxPickupError,2*cases/model.count,cases/model.count);
+    printf("{\"attachments\":%d,\"angle_poses\":%d,\"queries\":%d,\"maximum_matrix_error\":%.9f,\"range_checks\":%d,\"maximum_barrel_ray_error\":%.9f,\"pickup_barrel_checks\":%d,\"maximum_pickup_error_at_1024\":%.9f,\"blast_pose_checks_both_colors\":%d,\"support_pose_checks\":%d,\"arm_only_vertices\":%d,\"gun_only_vertices\":%d,\"passed\":true}\n",model.count,cases/model.count,cases,maxError,rangeCases,maxRayError,pickupCases,maxPickupError,2*cases/model.count,cases/model.count,armVertices,gunVertices);
 }

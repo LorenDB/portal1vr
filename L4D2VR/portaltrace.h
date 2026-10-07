@@ -52,15 +52,21 @@ struct Binding {
         return result;
     }
 
+    // Resolve an entity handle through the client entity list, as the
+    // native code does: the slot must still hold the same serial number.
+    void *Entity(uint32_t handle) const {
+        if (!entityList || handle == 0xffffffff || !SigScanner::IsReadable(*entityList, 16)) return nullptr;
+        const uintptr_t entry = *entityList + (handle & 0xfff) * 16;
+        if (!SigScanner::IsReadable(entry, 12)
+            || *reinterpret_cast<const uint32_t *>(entry + 8) != handle >> 12) return nullptr;
+        return reinterpret_cast<void *>(*reinterpret_cast<const uintptr_t *>(entry + 4));
+    }
+
     void *Environment(void *player) const {
         if (!function || !entityList || !traceFlags || !player
             || !SigScanner::IsReadable(reinterpret_cast<uintptr_t>(player) + 0x1658, 4)) return nullptr;
         const uint32_t handle = *reinterpret_cast<const uint32_t *>(static_cast<const char *>(player) + 0x1658);
-        if (handle == 0xffffffff || !SigScanner::IsReadable(*entityList, 16)) return nullptr;
-        const uintptr_t entry = *entityList + (handle & 0xfff) * 16;
-        if (!SigScanner::IsReadable(entry, 12)
-            || *reinterpret_cast<const uint32_t *>(entry + 8) != handle >> 12) return nullptr;
-        const uintptr_t portal = *reinterpret_cast<const uintptr_t *>(entry + 4);
+        const uintptr_t portal = reinterpret_cast<uintptr_t>(Entity(handle));
         if (!SigScanner::IsReadable(portal, 0xabc)
             || !*reinterpret_cast<const unsigned char *>(portal + 0xab4)) return nullptr;
         const uintptr_t linked = *reinterpret_cast<const uintptr_t *>(portal + 0xab8);

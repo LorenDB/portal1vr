@@ -10,9 +10,9 @@
 // the gun is aiming at.
 namespace AimMarker {
     constexpr int TextureSize = 64;
-    // Quad width per meter of distance, about 1.6 degrees across.
-    constexpr float WidthPerMeter = 0.028f;
-    constexpr float MinimumWidth = 0.004f;
+    // Quad width per meter of distance, about 1.2 degrees across.
+    constexpr float WidthPerMeter = 0.021f;
+    constexpr float MinimumWidth = 0.003f;
     // Sit just in front of the surface the gun hit.
     constexpr float DepthBias = 0.99f;
 

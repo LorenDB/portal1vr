@@ -38,11 +38,15 @@ No compiler or Blender installation is required.
 3. Start SteamVR, then run Launch Portal VR.cmd from the Portal game folder.
 
 The installer copies the x86 runtime, OpenVR DLL, controller bindings and
-arm materials. The hands, portal gun, player body and radio song are Portal's
-originals; replacement packs from earlier releases are moved to
+gun/arm materials. The portal gun, hands, player body and radio song are
+Portal's originals; replacement packs from earlier releases are moved to
 bin/VR/InstallBackups. Existing config values and comments are retained;
 missing settings receive shipped defaults.
 Back up an existing runtime before replacement.
+
+Only the portal gun is drawn in the gun hand. ShowArms=true also draws
+Portal's stock arms and enables the left-hand support below; it replaces the
+earlier ShowHands setting, which is no longer read.
 
 Left-hand support is optional and seats the palm under the gun barrel;
 release grip to resume independent tracking. Looking away no longer expires
@@ -75,10 +79,16 @@ SteamVR bindings may need the new left-handed action set configured.
 AimMode=2 draws a dot where the portal gun points. Portal shots, pickups,
 the support grip and menu clicks give controller haptics. Roomscale=true
 walks the player body after you when you move around your room, so walls,
-buttons and portals follow you; it waits while the stick is in use and does
-not walk off ledges. Set Roomscale=false to turn it off. Loading screens
-show on the menu panel instead of filling the view. These are new and
-still need headset tests.
+buttons and portals follow you, and walking off an edge falls; it waits while
+the stick is in use. Set Roomscale=false to turn it off.
+
+Portal's own menu and loading screens are shown on a flat screen placed in
+front of you (MenuScreenDistance, MenuScreenWidth, in meters). A lower
+desktop resolution in Portal's video options makes the menu text larger.
+The main-menu scene stands you on an indoor floor near its camera. Each eye
+is drawn through a portal exactly when that eye has passed the opening, head
+tilt no longer moves the view, and an IRL crouch keeps the hands with the
+camera. These are new and still need headset tests.
 
 AutoCalibration=true preserves position, height and heading after explicit
 SteamVR tracking-origin changes, including slow accumulated changes. It uses
@@ -89,7 +99,7 @@ AutoCalibration=false disables automatic recovery. Use manual recenter for
 an incorrect initial setup.
 
 This is a prerelease: attachment and regression checks passed against
-Portal's stock gun model. The stock hands and gun, pickup accuracy,
+Portal's stock gun model. The stock gun and hands, pickup accuracy,
 left-handed controller use and calibration need headset tests. Wrist-twist
 carry stability was confirmed in an earlier headset test.
 

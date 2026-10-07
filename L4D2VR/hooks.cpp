@@ -65,6 +65,9 @@ static Vector s_LocalPlayerBodyDrawOffset = {0, 0, 0};
 static struct { Vector origin, angles; float zNear, fov; } s_BodyExpectedView{};
 static Vector s_BodyCameraCenter = {0, 0, 0};
 static std::vector<bool> s_BodyViewStack;
+// Set for an eye that is on the other side of a portal from where the engine
+// believes its eye to be. See dDrawModelExecute.
+static bool s_HideOwnBody = false;
 
 static void ExpectBodyView(const CViewSetup &view)
 {
@@ -894,19 +897,31 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	CViewSetup desktopView = setup;
 	static const auto portalTrace = PortalTrace::Binding::Resolve(m_Game->m_BaseClient);
 	static const bool portalCameraSupported = PortalCamera::Supported(m_Game->m_BaseClient);
-	const auto portalCamera = PortalCamera::Read(m_Game->GetLocalPortalPlayer(),portalTrace,
+	void *localPlayer = m_Game->GetLocalPortalPlayer();
+	// The engine's own decision for its eye, and the portal opening the
+	// player is standing in. The desktop view and anything drawn between the
+	// eye passes keep the engine's frame.
+	const auto engineCamera = PortalCamera::Read(localPlayer,portalTrace,
 		portalCameraSupported && m_VR->m_IsVREnabled);
-	PortalCamera::Scope portalCameraScope(s_PortalCamera,portalCamera);
-	m_VR->m_EyeViewThroughPortal = portalCamera.transformed;
+	PortalCamera::Scope portalCameraScope(s_PortalCamera,engineCamera);
 	// CalcPortalView already transformed the native origin. Add roomscale and
 	// stereo offsets in player space, then map the complete camera and models.
-	Vector position = portalCamera.Unmap(setup.origin);
+	Vector position = engineCamera.Unmap(setup.origin);
 
-	// While a GameUI menu is open (main menu over the background map, or the
-	// in-game pause menu) the engine drives a scripted menu camera that can
-	// pan outside the room geometry. Freeze a standing anchor inside the
-	// environment instead, then solve roomscale and head collision from it
-	// exactly like gameplay. The desktop mirror below keeps the scripted view.
+	// The eye's height above the feet gives the duck dip exactly.
+	{
+		Vector feet;
+		QAngle unused;
+		const bool known = localPlayer
+			&& GetRenderableTransform(static_cast<unsigned char *>(localPlayer) + 4, feet, unused);
+		m_VR->SetEngineViewOffset(known, known ? position.z - feet.z : 0.0f);
+	}
+
+	// Behind the main menu the engine drives a scripted camera through the
+	// background map, on a path that leaves the room. Stand the player
+	// inside that room instead, then solve roomscale and head collision from
+	// there exactly like gameplay. A paused game keeps the player's own eye.
+	// The desktop view below keeps the scripted camera.
 	const bool menuFrame = m_Game->IsCursorVisible();
 	if (menuFrame)
 	{
@@ -915,7 +930,7 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	}
 	else
 	{
-		m_VR->ClearMenuAnchor();
+		m_VR->NoteGameplayView(position);
 	}
 
 	m_VR->m_SetupOrigin = position;
@@ -929,9 +944,7 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 			hmdAngle.x, hmdAngle.y, hmdAngle.z,
 			setup.angles.x, setup.angles.y, setup.angles.z);
 	}
-	m_Game->SetViewAngles(QAngle(hmdAngle.x, hmdAngle.y, hmdAngle.z));
-
-	float aspect = setup.m_flAspectRatio;
+	m_Game->SetViewAngles(m_VR->EngineViewAngles());
 
 	setup.x = 0;
 	setup.y = 0;
@@ -944,109 +957,75 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	setup.m_flAspectRatio = m_VR->m_Aspect;
 	setup.zNear = CameraCollision::NearClip;
 	setup.zNearViewmodel = 2;
-	const auto eyeAngles=portalCamera.Map(QAngle(hmdAngle.x,hmdAngle.y,hmdAngle.z));
-	setup.angles = Vector(eyeAngles.x,eyeAngles.y,eyeAngles.z);
-
-	if (!m_VR->m_CreatedVRTextures)
-	{
-		Vector desktopOrigin = m_VR->GetViewOrigin(position);
-		desktopOrigin.z += m_VR->PhysicalDuckViewCompensation(position);
-		setup.origin = portalCamera.Map(desktopOrigin);
-		hkRenderView.fOriginal(ecx, setup, nClearFlags, whatToDraw);
-		m_PushedHud = false;
-		m_VR->m_RenderedNewFrame = true;
-		return;
-	}
-
-	CViewSetup leftEyeView = setup;
-	CViewSetup rightEyeView = setup;
-
-	// Left eye CViewSetup
-	leftEyeView.origin = portalCamera.Map(m_VR->GetViewOriginLeft(position));
-	static bool wasPortalCamera = false;
-	if (wasPortalCamera != portalCamera.transformed) {
-		PortalVrLog("Portal eye camera transformed=%d supported=%d native=%f,%f,%f player=%f,%f,%f eye=%f,%f,%f angles=%f,%f,%f",
-			portalCamera.transformed,portalCameraSupported,desktopView.origin.x,desktopView.origin.y,desktopView.origin.z,
-			position.x,position.y,position.z,leftEyeView.origin.x,leftEyeView.origin.y,leftEyeView.origin.z,
-			leftEyeView.angles.x,leftEyeView.angles.y,leftEyeView.angles.z);
-		wasPortalCamera=portalCamera.transformed;
-	}
-    static int loggedEye = 0;
-    if (++loggedEye == 120) PortalVrLog("Eye view fov=%f aspect=%f pos=%f,%f,%f angle=%f,%f,%f near=%f far=%f ortho=%d projectionOverride=%d",
-        leftEyeView.fov,leftEyeView.m_flAspectRatio,leftEyeView.origin.x,leftEyeView.origin.y,leftEyeView.origin.z,
-        leftEyeView.angles.x,leftEyeView.angles.y,leftEyeView.angles.z,leftEyeView.zNear,leftEyeView.zFar,leftEyeView.m_bOrtho,leftEyeView.m_bViewToProjectionOverride);
 
 	IMatRenderContext* rndrContext = matSystem->GetRenderContext();
 	if (!rndrContext)
-		return hkRenderView.fOriginal(ecx, setup, nClearFlags, whatToDraw);
+		return hkRenderView.fOriginal(ecx, originalSetup, nClearFlags, whatToDraw);
 
-	m_VR->m_BindingEyeTexture = VR::Texture_LeftEye;
-	rndrContext->PushRenderTargetAndViewport(
-		m_VR->m_LeftEyeTexture,
-		0,
-		0,
-		static_cast<int>(m_VR->m_RenderWidth),
-		static_cast<int>(m_VR->m_RenderHeight));
-	m_VR->m_BindingEyeTexture = VR::Texture_None;
-	m_ActiveEyeTexture = m_VR->m_LeftEyeTexture;
-	memcpy(&s_EyeWorldView,&leftEyeView,sizeof(s_EyeWorldView));
-	s_HasLocalPlayerBodyTransform = false;
-	s_BodyDrawTriggered = false;
-	s_InlineBodyDrawEligible = true;
-	s_ActiveFirstPersonBodyPass = true;
-		ExpectBodyView(leftEyeView);
-		s_BodyCameraCenter = m_VR->GetViewOrigin(position);
-		s_BodyCameraCenter.z += m_VR->PhysicalDuckViewCompensation(position);
-		hkRenderView.fOriginal(ecx, leftEyeView, nClearFlags, whatToDraw & ~RENDERVIEW_DRAWHUD);
-	s_ActiveFirstPersonBodyPass = false;
-	s_InlineBodyDrawEligible = false;
-	m_ActiveEyeTexture = nullptr;
-	rndrContext->PopRenderTargetAndViewport();
-	
-	// Right eye CViewSetup
-	rightEyeView.origin = portalCamera.Map(m_VR->GetViewOriginRight(position));
+	// The camera center both eyes share, for the first-person body.
+	const Vector cameraCenter = m_VR->GetViewOrigin(position);
+	bool throughPortal = false;
+	const auto renderEye = [&](VR::TextureID id, ITexture *texture, const Vector &eyeInPlayerSpace)
+	{
+		// A VR head leads or trails the body at a portal. Each eye is through
+		// the portal exactly when that eye has passed the opening, whatever
+		// the engine decided for its own eye: on either side of the plane the
+		// camera is then in open air, where the engine can draw the portal.
+		const auto eyeCamera = engineCamera.For(eyeInPlayerSpace);
+		PortalCamera::Scope eyeScope(s_PortalCamera,eyeCamera);
+		throughPortal = throughPortal || eyeCamera.transformed;
+		s_HideOwnBody = eyeCamera.transformed != engineCamera.transformed;
+		CViewSetup eyeView = setup;
+		eyeView.origin = eyeCamera.Map(eyeInPlayerSpace);
+		const auto eyeAngles = eyeCamera.Map(QAngle(hmdAngle.x,hmdAngle.y,hmdAngle.z));
+		eyeView.angles = Vector(eyeAngles.x,eyeAngles.y,eyeAngles.z);
 
-	m_VR->m_BindingEyeTexture = VR::Texture_RightEye;
-	rndrContext->PushRenderTargetAndViewport(
-		m_VR->m_RightEyeTexture,
-		0,
-		0,
-		static_cast<int>(m_VR->m_RenderWidth),
-		static_cast<int>(m_VR->m_RenderHeight));
-	m_VR->m_BindingEyeTexture = VR::Texture_None;
-	m_ActiveEyeTexture = m_VR->m_RightEyeTexture;
-	memcpy(&s_EyeWorldView,&rightEyeView,sizeof(s_EyeWorldView));
-	s_HasLocalPlayerBodyTransform = false;
-	s_BodyDrawTriggered = false;
-	s_InlineBodyDrawEligible = true;
-	s_ActiveFirstPersonBodyPass = true;
-		ExpectBodyView(rightEyeView);
-		s_BodyCameraCenter = m_VR->GetViewOrigin(position);
-		s_BodyCameraCenter.z += m_VR->PhysicalDuckViewCompensation(position);
-		hkRenderView.fOriginal(ecx, rightEyeView, nClearFlags, whatToDraw & ~RENDERVIEW_DRAWHUD);
-	s_ActiveFirstPersonBodyPass = false;
-	s_InlineBodyDrawEligible = false;
-	m_ActiveEyeTexture = nullptr;
-	rndrContext->PopRenderTargetAndViewport();
+		if (id == VR::Texture_LeftEye)
+		{
+			static bool wasPortalCamera = false;
+			if (wasPortalCamera != eyeCamera.transformed) {
+				PortalVrLog("Portal eye camera transformed=%d engine=%d opening=%d native=%f,%f,%f player=%f,%f,%f eye=%f,%f,%f angles=%f,%f,%f",
+					eyeCamera.transformed,engineCamera.transformed,engineCamera.hasOpening,
+					desktopView.origin.x,desktopView.origin.y,desktopView.origin.z,
+					position.x,position.y,position.z,eyeView.origin.x,eyeView.origin.y,eyeView.origin.z,
+					eyeView.angles.x,eyeView.angles.y,eyeView.angles.z);
+				wasPortalCamera=eyeCamera.transformed;
+			}
+			static int loggedEye = 0;
+			if (++loggedEye == 120) PortalVrLog("Eye view fov=%f aspect=%f pos=%f,%f,%f angle=%f,%f,%f near=%f far=%f ortho=%d projectionOverride=%d",
+				eyeView.fov,eyeView.m_flAspectRatio,eyeView.origin.x,eyeView.origin.y,eyeView.origin.z,
+				eyeView.angles.x,eyeView.angles.y,eyeView.angles.z,eyeView.zNear,eyeView.zFar,eyeView.m_bOrtho,eyeView.m_bViewToProjectionOverride);
+		}
+
+		m_VR->m_BindingEyeTexture = id;
+		rndrContext->PushRenderTargetAndViewport(
+			texture,
+			0,
+			0,
+			static_cast<int>(m_VR->m_RenderWidth),
+			static_cast<int>(m_VR->m_RenderHeight));
+		m_VR->m_BindingEyeTexture = VR::Texture_None;
+		m_ActiveEyeTexture = texture;
+		memcpy(&s_EyeWorldView,&eyeView,sizeof(s_EyeWorldView));
+		s_HasLocalPlayerBodyTransform = false;
+		s_BodyDrawTriggered = false;
+		s_InlineBodyDrawEligible = true;
+		s_ActiveFirstPersonBodyPass = true;
+		ExpectBodyView(eyeView);
+		s_BodyCameraCenter = cameraCenter;
+		hkRenderView.fOriginal(ecx, eyeView, nClearFlags, whatToDraw & ~RENDERVIEW_DRAWHUD);
+		s_ActiveFirstPersonBodyPass = false;
+		s_InlineBodyDrawEligible = false;
+		m_ActiveEyeTexture = nullptr;
+		s_HideOwnBody = false;
+		rndrContext->PopRenderTargetAndViewport();
+	};
+	renderEye(VR::Texture_LeftEye, m_VR->m_LeftEyeTexture, m_VR->GetViewOriginLeft(position));
+	renderEye(VR::Texture_RightEye, m_VR->m_RightEyeTexture, m_VR->GetViewOriginRight(position));
+	m_VR->m_EyeViewThroughPortal = throughPortal;
 
 	m_PushedHud = false;
 	rndrContext->Release();
-
-	/*rndrContext = matSystem->GetRenderContext();
-
-	ITexture* fullscreenTxt = rndrContext->GetRenderTarget();
-
-	Rect_t srcRect;
-	srcRect.x = setup.x;
-	srcRect.y = setup.y;
-	srcRect.width = 1920;
-	srcRect.height = 1080;
-
-	rndrContext->SetRenderTarget(m_VR->m_RightEyeTexture);
-	rndrContext->CopyRenderTargetToTextureEx(fullscreenTxt, 0, &srcRect, &srcRect);
-
-	rndrContext->SetRenderTarget(NULL);
-	rndrContext->Release();*/
 
 	if (m_VR->m_RenderWindow) {
 		s_HasLocalPlayerBodyTransform = false;
@@ -1101,7 +1080,8 @@ bool __fastcall Hooks::dCreateMove(void *ecx, void *edx, float flInputSampleTime
 		cmd->buttons = jumpHeld ? (cmd->buttons | IN_JUMP) : (cmd->buttons & ~IN_JUMP);
 		cmd->buttons = crouchHeld ? (cmd->buttons | IN_DUCK) : (cmd->buttons & ~IN_DUCK);
 		cmd->buttons = reloadHeld ? (cmd->buttons | IN_RELOAD) : (cmd->buttons & ~IN_RELOAD);
-		cmd->viewangles = m_VR->m_HmdAngAbs;
+		// Roll stays out of what the engine is told (see VR::EngineViewAngles).
+		cmd->viewangles = m_VR->EngineViewAngles();
 		static bool lastUseHeld = false;
 		if (useHeld != lastUseHeld) {
 			PortalVrLog("Controller use state=%d origin=%f,%f,%f angle=%f,%f,%f cmdButtons=0x%X",
@@ -1467,12 +1447,39 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 
     if (m_VR->m_IsVREnabled && state && bones) {
         const auto *hdr = *reinterpret_cast<const unsigned char **>(state);
-        if (hdr && SigScanner::IsReadable(reinterpret_cast<uintptr_t>(hdr), 164)) {
+        // This runs for every model in every view. Almost none of them is
+        // the gun, the hands or the player: remember each header's verdict,
+        // so the memory query and the name comparison are paid once per model.
+        enum class Kind : unsigned char { Other, Tracked, Player };
+        struct Seen { const unsigned char *hdr = nullptr; int checksum = 0; Kind kind = Kind::Other; };
+        static Seen seen[256];
+        Seen &entry = seen[(reinterpret_cast<uintptr_t>(hdr) >> 6) & 255];
+        const bool known = hdr && entry.hdr == hdr
+            && entry.checksum == *reinterpret_cast<const int *>(hdr + 8);
+        if (known && entry.kind == Kind::Other)
+            return hkDrawModelExecute.fOriginal(ecx, state, info, pCustomBoneToWorld);
+        if (hdr && (known || SigScanner::IsReadable(reinterpret_cast<uintptr_t>(hdr), 164))) {
             const char *name = reinterpret_cast<const char *>(hdr + 12);
             const int count = *reinterpret_cast<const int *>(hdr + 156);
             const auto kind = HandPose::Identify(name, count);
             const bool gun = kind == HandPose::Model::Gun;
             const bool hands = kind == HandPose::Model::Hands;
+            // The body, and the world-model gun it carries in those views.
+            const bool playerModel = !_strnicmp(name, "player/", 7) || !_strnicmp(name, "player\\", 7)
+                || !_stricmp(name, "weapons/w_portalgun.mdl") || !_stricmp(name, "weapons\\w_portalgun.mdl");
+            entry.hdr = hdr;
+            entry.checksum = *reinterpret_cast<const int *>(hdr + 8);
+            entry.kind = gun || hands ? Kind::Tracked : playerModel ? Kind::Player : Kind::Other;
+            // Portal draws the player's body in views through portals, and
+            // draws a copy on the far side of a portal the player is standing
+            // in. Which of them it leaves out depends on which side it
+            // believes its own eye is on. A VR eye on the other side from
+            // that is where the copy stands, or looks straight back at the
+            // body it left: the player model filled the view at a crossing.
+            // For such an eye neither is drawn. It lasts only until the body
+            // has caught up; any other time Portal's own rule is right.
+            if (playerModel && s_HideOwnBody && !s_DrawingLocalPlayerBodyDirect)
+                return;
             if ((gun || hands) && SigScanner::IsReadable(reinterpret_cast<uintptr_t>(bones), count * sizeof(matrix3x4_t))
                 && m_VR->m_RightControllerForward.LengthSqr() > 0.9f) {
                 matrix3x4_t tracked[128];
@@ -1547,11 +1554,10 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
                         HandPose::Concat(reference[24], OptionalGunGrip::Socket()));
                     m_VR->m_SupportLastSeen = GetTickCount64();
                 } else {
-                    // ShowHands=false hides the bare-hand model outright: drawing
-                    // the stock hands at a tracked pose would be worse than none.
-                    // (The gun model's own arm is collapsed below instead, so the
+                    // Without ShowArms the bare-hand model is not drawn at all.
+                    // (The gun model's own arm is collapsed below, so the
                     // visible result is the portal gun alone.)
-                    if (!m_VR->m_ShowHands)
+                    if (!m_VR->m_ShowArms)
                         return;
                     auto leftTarget = HandPose::ControllerHandFrame(
                         m_VR->m_LeftHandForward, m_VR->m_LeftControllerRight,
@@ -1573,15 +1579,17 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
                 static int logged = 0;
                 if (logged++ < 6) PortalVrLog("Hand-anchored model=%s wrist=%f,%f,%f", name,
                     tracked[gun ? 8 : 27][0][3],tracked[gun ? 8 : 27][1][3],tracked[gun ? 8 : 27][2][3]);
-                if (gun && !m_VR->m_ShowHands && count > 25)
+                if (gun && !m_VR->m_ShowArms)
                 {
-                    // Gun-only mode: fold the gun model's integrated arm and
-                    // fingers (bones 0-23) into the receiver (bone 25, the
-                    // front cover) so only the portal gun mesh remains visible.
-                    // Folding into the base (bone 24) leaves a crumpled blob at
-                    // the grip, outside the housing. Aim metadata above already
-                    // ran, so shots, pickup, and effects are unaffected.
-                    for (int i = 0; i < 24; ++i) tracked[i] = tracked[25];
+                    // The portal gun alone. Its model is three meshes: the
+                    // arm, weighted only to bones 6-23, and the gun and its
+                    // glass, weighted only to bones 24 and up. Zero-scale
+                    // matrices put every arm vertex on one point, so the arm
+                    // draws nothing and the gun is untouched. Aim metadata
+                    // above already ran, so shots, pickup, and effects are
+                    // unaffected.
+                    const auto collapsed = HandPose::Frame({0,0,0},{0,0,0},{0,0,0},rightPosition);
+                    for (int i = 0; i < 24; ++i) tracked[i] = collapsed;
                 }
                 return DrawTrackedModel(ecx,state,info,tracked,count);
             }

@@ -184,7 +184,7 @@ $materialDestination = Join-Path $portalDir "portal\custom\portal1vr\materials"
 if (Test-Path -LiteralPath $materialSource) {
     New-Item -ItemType Directory -Force -Path $materialDestination | Out-Null
     Get-ChildItem -LiteralPath $materialSource -Directory | Copy-Item -Destination $materialDestination -Recurse -Force
-    Write-Host "Installed corrected arm materials"
+    Write-Host "Installed gun and arm materials"
 }
 
 # Portal's own hands, portal gun, player body and radio song are used. Earlier
