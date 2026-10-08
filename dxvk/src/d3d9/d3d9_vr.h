@@ -33,6 +33,11 @@ IDirect3DVR9 : public IUnknown{
   virtual HRESULT STDMETHODCALLTYPE UnlockDevice() = 0;
   virtual HRESULT STDMETHODCALLTYPE WaitDeviceIdle() = 0;
   virtual HRESULT STDMETHODCALLTYPE GetBackBufferData(SharedTextureHolder *backBufferData) = 0;
+  // Stretch part of a surface over the whole back buffer: the desktop
+  // mirror of an eye, without rendering the scene a third time.
+  virtual HRESULT STDMETHODCALLTYPE MirrorToBackBuffer(IDirect3DSurface9 *pSource, const RECT *pSourceRect) = 0;
+  // The device, borrowed (no reference added): for GPU timestamp queries.
+  virtual IDirect3DDevice9 *STDMETHODCALLTYPE GetDevice() = 0;
 };
 
 #ifdef _MSC_VER

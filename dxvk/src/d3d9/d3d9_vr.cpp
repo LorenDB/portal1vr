@@ -113,10 +113,15 @@ namespace dxvk {
 
         HRESULT STDMETHODCALLTYPE WaitDeviceIdle()
         {
+            VR *vr = g_Game ? g_Game->m_VR : nullptr;
             m_device->Flush();
             // Not clear if we need all here, perhaps...
             m_device->SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+            if (vr)
+                vr->FrameLap(FrameTiming::CommandThread);
             m_device->GetDXVKDevice()->waitForIdle();
+            if (vr)
+                vr->FrameLap(FrameTiming::GpuIdle);
             return D3D_OK;
         }
 
@@ -139,6 +144,24 @@ namespace dxvk {
             backBufferData->m_VRTexture.eColorSpace = vr::ColorSpace_Auto;
             backBufferData->m_VRTexture.eType = vr::TextureType_Vulkan;
             return D3D_OK;
+        }
+
+        HRESULT STDMETHODCALLTYPE MirrorToBackBuffer(IDirect3DSurface9 *pSource, const RECT *pSourceRect)
+        {
+            if (!pSource)
+                return D3DERR_INVALIDCALL;
+            IDirect3DSurface9 *backBuffer = nullptr;
+            HRESULT res = m_device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+            if (FAILED(res) || !backBuffer)
+                return FAILED(res) ? res : D3DERR_INVALIDCALL;
+            res = m_device->StretchRect(pSource, pSourceRect, backBuffer, nullptr, D3DTEXF_LINEAR);
+            backBuffer->Release();
+            return res;
+        }
+
+        IDirect3DDevice9 *STDMETHODCALLTYPE GetDevice()
+        {
+            return m_device;
         }
 
     private:

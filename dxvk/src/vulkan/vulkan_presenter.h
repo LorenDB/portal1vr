@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <limits>
 #include <vector>
 
 #include "../util/log/log.h"
@@ -79,6 +81,7 @@ namespace dxvk::vk {
   struct PresenterSync {
     VkSemaphore acquire;
     VkSemaphore present;
+    VkFence     acquired = VK_NULL_HANDLE; ///< Portal1VR: signalled once the image is really free
   };
 
   /**
@@ -131,6 +134,42 @@ namespace dxvk::vk {
     VkResult acquireNextImage(
             PresenterSync&  sync,
             uint32_t&       index);
+
+    /**
+     * \brief Never wait for a swap chain image
+     *
+     * Portal1VR: the desktop window must not pace the headset.
+     * While set, acquiring returns VK_NOT_READY instead of
+     * waiting when no image is free, and the image is acquired
+     * again on the next present.
+     */
+    void setNonBlocking(bool enabled) {
+      m_nonBlocking.store(enabled, std::memory_order_relaxed);
+    }
+
+    /**
+     * \brief Whether the acquired image can be drawn to now
+     *
+     * Portal1VR: an image can be handed out before the window
+     * system has let go of it; its acquire semaphore signals
+     * later. Waiting on that semaphore stalls the whole queue,
+     * and with it the headset's next frame. Non-blocking acquires
+     * also signal a fence, and this checks it.
+     */
+    bool acquiredImageReady();
+
+    /**
+     * \brief Time spent in the window system since the last call
+     *
+     * Portal1VR: presenting and acquiring run on DXVK's submission
+     * thread, which the headset frame waits for. Microseconds.
+     */
+    struct WsiTiming {
+      uint64_t presentSum = 0, presentMax = 0, presents = 0;
+      uint64_t acquireSum = 0, acquireMax = 0, acquires = 0;
+    };
+
+    WsiTiming takeWsiTiming();
     
     /**
      * \brief Presents current image
@@ -202,6 +241,29 @@ namespace dxvk::vk {
     uint32_t m_frameIndex = 0;
 
     VkResult m_acquireStatus = VK_NOT_READY;
+
+    std::atomic<bool> m_nonBlocking = { false };
+
+    /// The current image was acquired with its fence, not yet seen signalled
+    bool m_acquireFenceArmed = false;
+
+    std::atomic<uint64_t> m_wsiPresentSum = { 0 }, m_wsiPresentMax = { 0 }, m_wsiPresents = { 0 };
+    std::atomic<uint64_t> m_wsiAcquireSum = { 0 }, m_wsiAcquireMax = { 0 }, m_wsiAcquires = { 0 };
+
+    static void noteWsiTime(std::atomic<uint64_t>& sum, std::atomic<uint64_t>& max,
+      std::atomic<uint64_t>& count, uint64_t us) {
+      sum += us;
+      ++count;
+      uint64_t previous = max.load();
+      while (us > previous && !max.compare_exchange_weak(previous, us)) { }
+    }
+
+    uint64_t acquireTimeout() const {
+      return m_nonBlocking.load(std::memory_order_relaxed)
+        ? 0 : std::numeric_limits<uint64_t>::max();
+    }
+
+    VkResult acquire(const PresenterSync& sync);
 
     FpsLimiter m_fpsLimiter;
 

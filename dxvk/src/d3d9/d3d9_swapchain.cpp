@@ -1,4 +1,5 @@
 #include "d3d9_swapchain.h"
+#include "L4D2VR/debuglog.h"
 #include "d3d9_surface.h"
 #include "d3d9_monitor.h"
 
@@ -815,10 +816,16 @@ namespace dxvk {
     auto swapImage = m_backBuffers[0]->GetCommonTexture()->GetImage();
     auto swapImageView = m_backBuffers[0]->GetImageView(false);
 
+    m_presenter->setNonBlocking(m_vrNonBlocking);
+
     // Bump our frame id.
     ++m_frameId;
 
-    for (uint32_t i = 0; i < SyncInterval || i < 1; i++) {
+    // Portal1VR: the headset sets the pace, so a non-blocking desktop
+    // presents each frame once at most.
+    const uint32_t presents = m_vrNonBlocking ? 1u : std::max(SyncInterval, 1u);
+
+    for (uint32_t i = 0; i < presents; i++) {
       SynchronizePresent();
 
       // Presentation semaphores and WSI swap chain image
@@ -829,11 +836,25 @@ namespace dxvk {
 
       VkResult status = m_presenter->acquireNextImage(sync, imageIndex);
 
-      while (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR) {
+      while (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR
+          && !(m_vrNonBlocking && status == VK_NOT_READY)) {
         RecreateSwapChain(m_vsync);
         
         info = m_presenter->info();
         status = m_presenter->acquireNextImage(sync, imageIndex);
+      }
+
+      // Portal1VR: no free image means the monitor has not taken the
+      // last frame yet. Skip this one rather than wait for it: nothing
+      // was recorded or signalled, so this frame never reaches the window.
+      // The same goes for an image handed out before the window system has
+      // let go of it: drawing to it would stall the queue, and the headset
+      // with it, until then. It stays acquired for the next frame.
+      if (status == VK_NOT_READY
+       || (m_vrNonBlocking && !m_presenter->acquiredImageReady())) {
+        --m_frameId;
+        ++m_skippedPresents;
+        return;
       }
 
       m_context->beginRecording(
@@ -854,7 +875,7 @@ namespace dxvk {
       if (m_hud != nullptr)
         m_hud->render(m_context, info.format, info.imageExtent);
 
-      if (i + 1 >= SyncInterval)
+      if (i + 1 >= presents)
         m_context->signal(m_frameLatencySignal, m_frameId);
 
       SubmitPresent(sync, i);
@@ -920,6 +941,12 @@ namespace dxvk {
 
     if (m_presenter->recreateSwapChain(presenterDesc) != VK_SUCCESS)
       throw DxvkError("D3D9SwapChainEx: Failed to recreate swap chain");
+
+    // Portal1VR: FIFO here means the monitor would pace every frame.
+    const vk::PresenterInfo presented = m_presenter->info();
+    PortalVrLog("Desktop swap chain vsync=%d present mode=%d (0 immediate, 1 mailbox, 2 fifo, 3 fifo relaxed) images=%u extent=%ux%u",
+      Vsync, int(presented.presentMode), presented.imageCount,
+      presented.imageExtent.width, presented.imageExtent.height);
     
     CreateRenderTargetViews();
   }

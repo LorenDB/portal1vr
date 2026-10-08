@@ -3558,13 +3558,36 @@ namespace dxvk {
           HWND hDestWindowOverride,
     const RGNDATA* pDirtyRegion,
           DWORD dwFlags) {
-    
-	HRESULT result = m_implicitSwapchain->Present(
-    pSourceRect,
-    pDestRect,
-    hDestWindowOverride,
-    pDirtyRegion,
-    dwFlags);
+    // Portal1VR: while the headset is in use it sets the pace. The desktop
+    // window gets a frame whenever the monitor is ready for one, and the
+    // game never waits for it.
+    VR *vrTiming = g_Game && g_Game->m_VR && g_Game->m_VR->m_IsInitialized ? g_Game->m_VR : nullptr;
+    if (vrTiming) {
+      vrTiming->FrameLap(FrameTiming::AfterRender);
+      vrTiming->GpuMark(GpuTiming::BeforePresent);
+    }
+    m_implicitSwapchain->SetVrNonBlocking(vrTiming && vrTiming->m_IsVREnabled);
+
+    HRESULT result = D3D_OK;
+    if (vrTiming && vrTiming->SkipDesktopPresent())
+      vrTiming->m_FrameTiming.SkippedDesktopPresent();
+    else
+      result = m_implicitSwapchain->Present(
+        pSourceRect,
+        pDestRect,
+        hDestWindowOverride,
+        pDirtyRegion,
+        dwFlags);
+
+    if (vrTiming) {
+      vrTiming->FrameLap(FrameTiming::Present);
+      vrTiming->GpuMark(GpuTiming::AfterPresent);
+      for (uint32_t skipped = m_implicitSwapchain->TakeSkippedPresents(); skipped; --skipped)
+        vrTiming->m_FrameTiming.SkippedDesktopPresent();
+      const auto wsi = m_implicitSwapchain->TakeWsiTiming();
+      vrTiming->NoteWsiTiming(wsi.presentSum, wsi.presentMax, wsi.presents,
+        wsi.acquireSum, wsi.acquireMax, wsi.acquires);
+    }
 
     // Opt-in render diagnostics; no GPU readback during normal play.
     static const bool dumpEyeTextures = strstr(GetCommandLineA(), "-portalvr-debug-textures") != nullptr;

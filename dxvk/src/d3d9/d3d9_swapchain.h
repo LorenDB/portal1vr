@@ -78,6 +78,23 @@ namespace dxvk {
 
     void SyncFrameLatency();
 
+    /**
+     * \brief Portal1VR: never let the desktop window pace the headset
+     *
+     * While set, a present finds no free swap chain image is
+     * skipped instead of waiting for one. The desktop window then
+     * updates as often as the monitor takes frames, and no more.
+     */
+    void SetVrNonBlocking(bool Enabled) { m_vrNonBlocking = Enabled; }
+
+    /// Desktop presents skipped since the last call
+    uint32_t TakeSkippedPresents() { return std::exchange(m_skippedPresents, 0u); }
+
+    /// Window-system time on the submission thread since the last call
+    vk::Presenter::WsiTiming TakeWsiTiming() {
+      return m_presenter != nullptr ? m_presenter->takeWsiTiming() : vk::Presenter::WsiTiming();
+    }
+
   private:
 
     enum BindingIds : uint32_t {
@@ -119,6 +136,9 @@ namespace dxvk {
 
     bool                      m_dirty    = true;
     bool                      m_vsync    = true;
+
+    bool                      m_vrNonBlocking   = false;
+    uint32_t                  m_skippedPresents = 0;
 
     bool                      m_dialog;
     bool                      m_lastDialog = false;

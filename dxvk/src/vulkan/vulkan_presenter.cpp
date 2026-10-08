@@ -47,17 +47,64 @@ namespace dxvk::vk {
     sync = m_semaphores.at(m_frameIndex);
 
     // Don't acquire more than one image at a time
-    if (m_acquireStatus == VK_NOT_READY) {
-      m_acquireStatus = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
-        m_swapchain, std::numeric_limits<uint64_t>::max(),
-        sync.acquire, VK_NULL_HANDLE, &m_imageIndex);
-    }
+    if (m_acquireStatus == VK_NOT_READY || m_acquireStatus == VK_TIMEOUT)
+      m_acquireStatus = acquire(sync);
     
     if (m_acquireStatus != VK_SUCCESS && m_acquireStatus != VK_SUBOPTIMAL_KHR)
       return m_acquireStatus;
     
     index = m_imageIndex;
     return m_acquireStatus;
+  }
+
+
+  VkResult Presenter::acquire(const PresenterSync& sync) {
+    // Portal1VR: a non-blocking acquire also signals a fence, so that the
+    // image can be checked before anything waits on it.
+    const bool nonBlocking = m_nonBlocking.load(std::memory_order_relaxed);
+    VkFence fence = nonBlocking ? sync.acquired : VK_NULL_HANDLE;
+
+    if (fence)
+      m_vkd->vkResetFences(m_vkd->device(), 1, &fence);
+
+    const auto acquireStart = dxvk::high_resolution_clock::now();
+    VkResult status = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
+      m_swapchain, acquireTimeout(),
+      sync.acquire, fence, &m_imageIndex);
+    noteWsiTime(m_wsiAcquireSum, m_wsiAcquireMax, m_wsiAcquires, uint64_t(
+      std::chrono::duration_cast<std::chrono::microseconds>(dxvk::high_resolution_clock::now() - acquireStart).count()));
+
+    // Nothing was acquired: try again next time.
+    if (status == VK_TIMEOUT)
+      status = VK_NOT_READY;
+
+    m_acquireFenceArmed = fence && (status == VK_SUCCESS || status == VK_SUBOPTIMAL_KHR);
+    return status;
+  }
+
+
+  Presenter::WsiTiming Presenter::takeWsiTiming() {
+    WsiTiming timing;
+    timing.presentSum = m_wsiPresentSum.exchange(0);
+    timing.presentMax = m_wsiPresentMax.exchange(0);
+    timing.presents   = m_wsiPresents.exchange(0);
+    timing.acquireSum = m_wsiAcquireSum.exchange(0);
+    timing.acquireMax = m_wsiAcquireMax.exchange(0);
+    timing.acquires   = m_wsiAcquires.exchange(0);
+    return timing;
+  }
+
+
+  bool Presenter::acquiredImageReady() {
+    if (!m_acquireFenceArmed)
+      return true;
+
+    if (m_vkd->vkGetFenceStatus(m_vkd->device(),
+        m_semaphores.at(m_frameIndex).acquired) != VK_SUCCESS)
+      return false;
+
+    m_acquireFenceArmed = false;
+    return true;
   }
 
 
@@ -74,7 +121,10 @@ namespace dxvk::vk {
     info.pImageIndices      = &m_imageIndex;
     info.pResults           = nullptr;
 
+    const auto presentStart = dxvk::high_resolution_clock::now();
     VkResult status = m_vkd->vkQueuePresentKHR(m_device.queue, &info);
+    noteWsiTime(m_wsiPresentSum, m_wsiPresentMax, m_wsiPresents, uint64_t(
+      std::chrono::duration_cast<std::chrono::microseconds>(dxvk::high_resolution_clock::now() - presentStart).count()));
 
     if (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR)
       return status;
@@ -86,9 +136,7 @@ namespace dxvk::vk {
 
     sync = m_semaphores.at(m_frameIndex);
 
-    m_acquireStatus = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
-      m_swapchain, std::numeric_limits<uint64_t>::max(),
-      sync.acquire, VK_NULL_HANDLE, &m_imageIndex);
+    m_acquireStatus = acquire(sync);
 
     bool vsync = m_info.presentMode == VK_PRESENT_MODE_FIFO_KHR
               || m_info.presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
@@ -232,6 +280,15 @@ namespace dxvk::vk {
 
       if ((status = m_vkd->vkCreateSemaphore(m_vkd->device(),
           &semInfo, nullptr, &m_semaphores[i].present)) != VK_SUCCESS)
+        return status;
+
+      VkFenceCreateInfo fenceInfo;
+      fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+      fenceInfo.pNext = nullptr;
+      fenceInfo.flags = 0;
+
+      if ((status = m_vkd->vkCreateFence(m_vkd->device(),
+          &fenceInfo, nullptr, &m_semaphores[i].acquired)) != VK_SUCCESS)
         return status;
     }
     
@@ -480,9 +537,19 @@ namespace dxvk::vk {
     for (const auto& img : m_images)
       m_vkd->vkDestroyImageView(m_vkd->device(), img.view, nullptr);
     
+    // An image acquired with a fence may not be free yet; the fence
+    // must not be destroyed while the acquire can still signal it.
+    if (m_acquireFenceArmed && m_frameIndex < m_semaphores.size()) {
+      VkFence fence = m_semaphores[m_frameIndex].acquired;
+      m_vkd->vkWaitForFences(m_vkd->device(), 1, &fence, VK_TRUE, 100'000'000ull);
+      m_acquireFenceArmed = false;
+    }
+
     for (const auto& sem : m_semaphores) {
       m_vkd->vkDestroySemaphore(m_vkd->device(), sem.acquire, nullptr);
       m_vkd->vkDestroySemaphore(m_vkd->device(), sem.present, nullptr);
+      if (sem.acquired)
+        m_vkd->vkDestroyFence(m_vkd->device(), sem.acquired, nullptr);
     }
 
     m_vkd->vkDestroySwapchainKHR(m_vkd->device(), m_swapchain, nullptr);
