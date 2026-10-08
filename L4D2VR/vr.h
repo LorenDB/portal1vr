@@ -8,12 +8,15 @@
 #include "autocalibration.h"
 #include "roomscale.h"
 #include "mapcamera.h"
+#include "frametiming.h"
+#include "gputiming.h"
 
 #define MAX_STR_LEN 256
 
 class Game;
 struct IDirect3DTexture9;
 struct IDirect3DSurface9;
+struct IDirect3DQuery9;
 class ITexture;
 
 
@@ -172,6 +175,40 @@ public:
 	std::uint64_t m_FramePacingSince = 0;
 	vr::Compositor_CumulativeStats m_FramePacingStats{};
 	void LogFramePacing();
+	// RenderWindow=2: the desktop window shows the left eye, copied by the
+	// GPU, instead of the scene rendered a third time.
+	void MirrorLeftEye(int width, int height);
+	// Where each frame's time goes (frametiming.h), logged every 10 seconds
+	// of play against the headset's refresh interval.
+	FrameTiming::Recorder m_FrameTiming;
+	float m_DisplayFrequency = 90.0f;
+	void FrameLap(FrameTiming::Phase phase);
+	void EndFrameTiming();
+	// GPU timestamps at the same points (gputiming.h), written into the
+	// command stream and read back a few frames later.
+	struct GpuFrame {
+		IDirect3DQuery9 *query[GpuTiming::MarkCount] = {};
+		bool issued[GpuTiming::MarkCount] = {};
+	};
+	GpuFrame m_GpuFrames[4];
+	unsigned m_GpuFrameIndex = 0;
+	IDirect3DQuery9 *m_GpuFrequencyQuery = nullptr;
+	double m_GpuTicksPerSecond = 0.0;
+	bool m_GpuTimingDisabled = false;
+	bool m_GpuHavePrevious = false;
+	double m_GpuPreviousEnd = 0.0;
+	GpuTiming::Window m_GpuWindow;
+	void GpuMark(GpuTiming::Mark mark);
+	// Time the desktop window's present and acquire spend in the window
+	// system, on DXVK's submission thread (microseconds), per log window.
+	uint64_t m_WsiPresentSum = 0, m_WsiPresentMax = 0, m_WsiPresents = 0;
+	uint64_t m_WsiAcquireSum = 0, m_WsiAcquireMax = 0, m_WsiAcquires = 0;
+	void NoteWsiTiming(uint64_t presentSum, uint64_t presentMax, uint64_t presents,
+		uint64_t acquireSum, uint64_t acquireMax, uint64_t acquires);
+	// RenderWindow=0 during play: nothing needs the desktop window, so it
+	// is not presented at all. Menus, loading and the credits still are.
+	bool SkipDesktopPresent() const;
+	void ReadGpuFrame(GpuFrame &frame);
 
 	Vector m_LeftControllerPosRel = { 0, 0, 0 };
 	QAngle m_LeftControllerAngAbs = { 0, 0, 0 };

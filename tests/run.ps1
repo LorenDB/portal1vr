@@ -23,6 +23,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Portal camera tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Roomscale/aim marker test build failed.' }
 & (Join-Path $output 'roomscale-aim-marker.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Roomscale follow, aim marker, or log regressions failed.' }
+& cl.exe /nologo /std:c++17 /EHsc /RTC1 /Od /DWIN32 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS "/I$repository\L4D2VR" (Join-Path $PSScriptRoot 'frame-timing.cpp') "/Fe$output\frame-timing.exe" "/Fo$output\frame-timing.obj"
+if ($LASTEXITCODE -ne 0) { throw 'Frame timing test build failed.' }
+& (Join-Path $output 'frame-timing.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Frame timing regressions failed.' }
+& cl.exe /nologo /std:c++17 /EHsc /RTC1 /Od /DWIN32 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS "/I$repository\L4D2VR" (Join-Path $PSScriptRoot 'desktop-mirror.cpp') "/Fe$output\desktop-mirror.exe" "/Fo$output\desktop-mirror.obj"
+if ($LASTEXITCODE -ne 0) { throw 'Desktop mirror test build failed.' }
+& (Join-Path $output 'desktop-mirror.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Desktop mirror regressions failed.' }
 & cl.exe /nologo /std:c++17 /EHsc /RTC1 /Od /DWIN32 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS "/I$repository\L4D2VR" "/I$repository\L4D2VR\sdk" (Join-Path $PSScriptRoot 'map-camera.cpp') "/Fe$output\map-camera.exe" "/Fo$output\map-camera.obj"
 if ($LASTEXITCODE -ne 0) { throw 'Map camera test build failed.' }
 & (Join-Path $output 'map-camera.exe')

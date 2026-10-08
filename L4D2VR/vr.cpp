@@ -30,6 +30,7 @@
 #include "roomscale.h"
 #include "portalcamera.h"
 #include "credits.h"
+#include "desktopmirror.h"
 #include "aimmarker.h"
 
 namespace
@@ -107,6 +108,15 @@ VR::VR(Game *game)
     m_System->GetRecommendedRenderTargetSize(&m_RenderWidth, &m_RenderHeight);
     m_AntiAliasing = 0;
     PortalVrLog("Recommended render target %u x %u", m_RenderWidth, m_RenderHeight);
+    {
+        vr::ETrackedPropertyError error = vr::TrackedProp_Success;
+        const float frequency = m_System->GetFloatTrackedDeviceProperty(
+            vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_DisplayFrequency_Float, &error);
+        if (error == vr::TrackedProp_Success && std::isfinite(frequency) && frequency >= 30.0f && frequency <= 240.0f)
+            m_DisplayFrequency = frequency;
+        PortalVrLog("Headset refresh %.1f Hz (error=%d): %.2f ms per frame",
+            m_DisplayFrequency, error, 1000.0f / m_DisplayFrequency);
+    }
 
     float l_left = 0.0f, l_right = 0.0f, l_top = 0.0f, l_bottom = 0.0f;
     m_System->GetProjectionRaw(vr::EVREye::Eye_Left, &l_left, &l_right, &l_top, &l_bottom);
@@ -415,7 +425,14 @@ void VR::Update()
         }
     }
 
+    // The frame ends when this update does, on every path out of it.
+    struct FrameEnd {
+        VR &vr;
+        ~FrameEnd() { vr.EndFrameTiming(); }
+    } frameEnd{ *this };
+
     SubmitVRTextures();
+    FrameLap(FrameTiming::Submit);
     if (!loggedAfterSubmit)
     {
         PortalVrLog("VR::Update completed SubmitVRTextures");
@@ -423,6 +440,7 @@ void VR::Update()
     }
 
     UpdatePosesAndActions();
+    FrameLap(FrameTiming::Poses);
     if (!loggedAfterPoses)
     {
         PortalVrLog("VR::Update completed UpdatePosesAndActions");
@@ -977,6 +995,164 @@ void VR::UpdateMapCamera(int viewEntity, int localPlayer, const Vector &cameraOr
             m_MapCamera.entity, cameraOrigin.x, cameraOrigin.y, cameraOrigin.z, cameraYaw, m_MapCamera.yawOffset);
     else
         PortalVrLog("Map camera released; view returns to the player");
+}
+
+void VR::MirrorLeftEye(int width, int height)
+{
+    if (!g_D3DVR9 || !m_D9LeftEyeSurface)
+        return;
+    const auto &bounds = m_TextureBounds[0];
+    DesktopMirror::Rect crop;
+    if (!DesktopMirror::Crop(static_cast<int>(m_RenderWidth), static_cast<int>(m_RenderHeight),
+            bounds.uMin, bounds.vMin, bounds.uMax, bounds.vMax, width, height, crop))
+        return;
+    RECT source{ crop.left, crop.top, crop.right, crop.bottom };
+    const HRESULT result = g_D3DVR9->MirrorToBackBuffer(m_D9LeftEyeSurface, &source);
+    static HRESULT lastResult = S_FALSE;
+    if (result != lastResult)
+    {
+        PortalVrLog("Desktop mirror of the left eye result=0x%08lx source=%ld,%ld-%ld,%ld window=%dx%d",
+            static_cast<unsigned long>(result), source.left, source.top, source.right, source.bottom, width, height);
+        lastResult = result;
+    }
+}
+
+static double FrameTimingSeconds()
+{
+    static const double frequency = [] {
+        LARGE_INTEGER value{};
+        QueryPerformanceFrequency(&value);
+        return static_cast<double>(value.QuadPart);
+    }();
+    LARGE_INTEGER counter{};
+    QueryPerformanceCounter(&counter);
+    return frequency > 0.0 ? static_cast<double>(counter.QuadPart) / frequency : 0.0;
+}
+
+void VR::FrameLap(FrameTiming::Phase phase)
+{
+    m_FrameTiming.Lap(phase, FrameTimingSeconds());
+}
+
+void VR::ReadGpuFrame(GpuFrame &frame)
+{
+    double time[GpuTiming::MarkCount] = {};
+    bool valid[GpuTiming::MarkCount] = {};
+    const bool started = frame.issued[GpuTiming::Start];
+    for (unsigned mark = 0; mark < GpuTiming::MarkCount; ++mark)
+    {
+        UINT64 ticks = 0;
+        if (frame.issued[mark] && frame.query[mark] && m_GpuTicksPerSecond > 0.0
+            && frame.query[mark]->GetData(&ticks, sizeof(ticks), 0) == S_OK)
+        {
+            time[mark] = static_cast<double>(ticks) / m_GpuTicksPerSecond;
+            valid[mark] = true;
+        }
+        frame.issued[mark] = false;
+    }
+    if (!started)
+    {
+        m_GpuHavePrevious = false;
+        return;
+    }
+    m_GpuWindow.Add(time, valid, m_GpuHavePrevious, m_GpuPreviousEnd);
+    m_GpuHavePrevious = false;
+    if (valid[GpuTiming::Start])
+        for (int mark = GpuTiming::MarkCount - 1; mark >= 0; --mark)
+            if (valid[mark])
+            {
+                m_GpuPreviousEnd = time[mark];
+                m_GpuHavePrevious = true;
+                break;
+            }
+}
+
+void VR::GpuMark(GpuTiming::Mark mark)
+{
+    if (m_GpuTimingDisabled || !g_D3DVR9 || mark >= GpuTiming::MarkCount)
+        return;
+    IDirect3DDevice9 *device = g_D3DVR9->GetDevice();
+    if (!device)
+        return;
+    const auto disable = [this](const char *what, HRESULT result)
+    {
+        m_GpuTimingDisabled = true;
+        PortalVrLog("GPU timing unavailable: %s failed (0x%08lx)", what, static_cast<unsigned long>(result));
+    };
+    if (!m_GpuFrequencyQuery)
+    {
+        const HRESULT result = device->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ, &m_GpuFrequencyQuery);
+        if (FAILED(result) || !m_GpuFrequencyQuery)
+            return disable("timestamp frequency query", result);
+        m_GpuFrequencyQuery->Issue(D3DISSUE_END);
+    }
+    if (m_GpuTicksPerSecond <= 0.0)
+    {
+        UINT64 frequency = 0;
+        if (m_GpuFrequencyQuery->GetData(&frequency, sizeof(frequency), 0) == S_OK && frequency)
+        {
+            m_GpuTicksPerSecond = static_cast<double>(frequency);
+            PortalVrLog("GPU timestamps at %.0f ticks per second", m_GpuTicksPerSecond);
+        }
+    }
+    // A new frame reuses the slot of the frame four starts back, whose
+    // timestamps the GPU has written by now.
+    if (mark == GpuTiming::Start)
+    {
+        m_GpuFrameIndex = (m_GpuFrameIndex + 1) % 4;
+        ReadGpuFrame(m_GpuFrames[m_GpuFrameIndex]);
+    }
+    GpuFrame &frame = m_GpuFrames[m_GpuFrameIndex];
+    if ((mark != GpuTiming::Start && !frame.issued[GpuTiming::Start]) || frame.issued[mark])
+        return;
+    if (!frame.query[mark])
+    {
+        const HRESULT result = device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &frame.query[mark]);
+        if (FAILED(result) || !frame.query[mark])
+            return disable("timestamp query", result);
+    }
+    if (SUCCEEDED(frame.query[mark]->Issue(D3DISSUE_END)))
+        frame.issued[mark] = true;
+}
+
+void VR::NoteWsiTiming(uint64_t presentSum, uint64_t presentMax, uint64_t presents,
+    uint64_t acquireSum, uint64_t acquireMax, uint64_t acquires)
+{
+    m_WsiPresentSum += presentSum;
+    m_WsiPresentMax = std::max(m_WsiPresentMax, presentMax);
+    m_WsiPresents += presents;
+    m_WsiAcquireSum += acquireSum;
+    m_WsiAcquireMax = std::max(m_WsiAcquireMax, acquireMax);
+    m_WsiAcquires += acquires;
+}
+
+bool VR::SkipDesktopPresent() const
+{
+    return m_IsVREnabled && m_RenderWindow == 0 && m_RenderedNewFrame && !m_CreditsRolling
+        && m_Game->IsInGame() && !m_Game->IsCursorVisible();
+}
+
+void VR::EndFrameTiming()
+{
+    const bool gameplay = m_Game->IsInGame() && !m_Game->IsCursorVisible();
+    const double budget = 1.0 / m_DisplayFrequency;
+    FrameTiming::Window window;
+    if (m_FrameTiming.EndFrame(FrameTimingSeconds(), gameplay, budget, 10.0, window))
+    {
+        char line[1024];
+        if (window.Format(line, sizeof(line), budget) > 0)
+            PortalVrLog("%s", line);
+        if (m_GpuWindow.Format(line, sizeof(line)) > 0)
+            PortalVrLog("%s", line);
+        m_GpuWindow = GpuTiming::Window();
+        PortalVrLog("Desktop window system: presents=%llu present avg=%.2fms max=%.2fms acquires=%llu acquire avg=%.2fms max=%.2fms",
+            static_cast<unsigned long long>(m_WsiPresents),
+            m_WsiPresents ? m_WsiPresentSum / 1000.0 / m_WsiPresents : 0.0, m_WsiPresentMax / 1000.0,
+            static_cast<unsigned long long>(m_WsiAcquires),
+            m_WsiAcquires ? m_WsiAcquireSum / 1000.0 / m_WsiAcquires : 0.0, m_WsiAcquireMax / 1000.0);
+        m_WsiPresentSum = m_WsiPresentMax = m_WsiPresents = 0;
+        m_WsiAcquireSum = m_WsiAcquireMax = m_WsiAcquires = 0;
+    }
 }
 
 void VR::LogFramePacing()

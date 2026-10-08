@@ -888,6 +888,8 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 
 	if (!m_VR->m_CreatedVRTextures)
 		return hkRenderView.fOriginal(ecx, setup, nClearFlags, whatToDraw);
+	m_VR->FrameLap(FrameTiming::Engine);
+	m_VR->GpuMark(GpuTiming::Start);
 
 	//VPanel* g_pFullscreenRootPanel = *(VPanel**)(m_Game->m_Offsets->g_pFullscreenRootPanel.address);
 
@@ -1036,8 +1038,12 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	};
 	renderEye(VR::Texture_LeftEye, m_VR->m_LeftEyeTexture,
 		mapCamera.TurnPosition(position, m_VR->GetViewOriginLeft(position)));
+	m_VR->FrameLap(FrameTiming::LeftEye);
+	m_VR->GpuMark(GpuTiming::LeftEye);
 	renderEye(VR::Texture_RightEye, m_VR->m_RightEyeTexture,
 		mapCamera.TurnPosition(position, m_VR->GetViewOriginRight(position)));
+	m_VR->FrameLap(FrameTiming::RightEye);
+	m_VR->GpuMark(GpuTiming::RightEye);
 	m_VR->m_EyeViewThroughPortal = throughPortal;
 
 	m_PushedHud = false;
@@ -1046,8 +1052,12 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 	// The desktop pass is the only one that draws the HUD. The end credits
 	// are HUD, and painting them is what plays them: draw it while they roll
 	// even with the desktop window off, for the flat screen in the headset.
+	// RenderWindow=2 mirrors the left eye during play instead, which costs
+	// a GPU copy rather than a third scene; menus keep the full view, so
+	// the flat screen behind the menu looks as it does with RenderWindow=1.
 	const bool creditsRolling = m_VR->UpdateCreditsRolling();
-	if (m_VR->m_RenderWindow || creditsRolling) {
+	const bool mirror = m_VR->m_RenderWindow == 2 && !menuFrame;
+	if ((m_VR->m_RenderWindow && !mirror) || creditsRolling) {
 		s_HasLocalPlayerBodyTransform = false;
 		s_BodyDrawTriggered = false;
 		s_InlineBodyDrawEligible = true;
@@ -1058,7 +1068,10 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &originalSet
 		s_ActiveFirstPersonBodyPass = false;
 		s_InlineBodyDrawEligible = false;
 	}
-
+	else if (mirror)
+		m_VR->MirrorLeftEye(desktopView.width, desktopView.height);
+	m_VR->FrameLap(FrameTiming::Desktop);
+	m_VR->GpuMark(GpuTiming::Desktop);
 
 	m_VR->m_RenderedNewFrame = true;
 }
