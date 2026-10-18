@@ -1,6 +1,6 @@
-# README image sources
+# Image sources
 
-The screenshots were captured locally while playing Portal 1 VR fullscreen with a Pico headset through SteamVR on September 14, 2026. SteamVR's `IVRScreenshots::TakeStereoScreenshot` captured the live headset view while Portal was the active scene. The single-eye preview images were compressed losslessly, with their pixels verified unchanged. No stock gameplay screenshots are used.
+The README does not use these images. The screenshots are from a Pico / SteamVR playtest on September 14, 2026 (`IVRScreenshots::TakeStereoScreenshot`). They are out of date and are not documentation of the current mod.
 
 | Repository file | Source |
 | --- | --- |

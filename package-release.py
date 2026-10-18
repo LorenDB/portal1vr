@@ -7,11 +7,12 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output',type=Path,required=True)
 args=parser.parse_args();args.output.parent.mkdir(parents=True,exist_ok=True)
 files={}
-for name in ['Release/d3d9.dll','Launch Portal VR.cmd','Launch Rexaura VR.cmd','rexaura-vr-launch.sh','L4D2VR/copy-to-portal.ps1',
+for name in ['Release/d3d9.dll','Launch Portal VR.cmd','Launch Rexaura VR.cmd','rexaura-vr-launch.sh','Uninstall.ps1','Uninstall.cmd','L4D2VR/copy-to-portal.ps1',
              'L4D2VR/config.txt','L4D2VR/manifest.vrmanifest',
              'L4D2VR/portal1vr_capsule_main.png','L4D2VR/portal1vr_portrait_main.png',
              'thirdparty/openvr/bin/win32/openvr_api.dll',
-             'thirdparty/openvr/LICENSE','thirdparty/minhook/LICENSE.txt','dxvk/LICENSE']:
+             'thirdparty/openvr/LICENSE','thirdparty/minhook/LICENSE.txt','dxvk/LICENSE',
+             'L4D2VR/sdk/LICENSE.txt','L4D2VR/sdk/thirdpartylegalnotices.txt']:
     files[name]=(repo/name).read_bytes()
 for folder in ['L4D2VR/SteamVRActionManifest','L4D2VR/materials','L4D2VR/resource','L4D2VR/rexaura_vr']:
     for path in (repo/folder).rglob('*'):
@@ -27,99 +28,71 @@ if ($RexauraDirectory) { $options.RexauraDirectory = $RexauraDirectory }
 & (Join-Path $PSScriptRoot 'L4D2VR/copy-to-portal.ps1') @options
 '''
 files['Install.cmd']=b'@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install.ps1" %*\r\npause\r\n'
-files['README.txt']=b'''Portal1VR - compiled Windows x86 release
+files['README.txt']='''Portal1VR - Windows x86
 
-Requires the Steam version of Portal and a working SteamVR headset setup.
-No compiler or Blender installation is required.
+Source: https://github.com/LorenDB/portal1vr
+d3d9.dll is a modified DXVK (fholger/dxvk_l4d2vr msaa, plus the Portal
+changes in that repo). It is not an upstream DXVK build. The version
+resource identifies it as Portal1VR.
 
-1. Close Portal and extract this entire ZIP to a folder.
-2. Run Install.cmd. The installer finds the Steam Portal installation.
-   For a custom location, run PowerShell in this folder:
+Requires the Steam Windows x86 version of Portal and SteamVR.
+No compiler is required.
+
+On Linux, install with Kaon: https://github.com/LorenDB/kaon
+
+On Windows:
+1. Close Portal and extract this zip.
+2. Run Install.cmd. It finds a Steam install of Portal.
+   Custom location:
    .\\Install.ps1 -PortalDirectory "D:\\SteamLibrary\\steamapps\\common\\Portal"
-3. Start SteamVR, then run Launch Portal VR.cmd from the Portal game folder.
+3. Start SteamVR, then run Launch Portal VR.cmd in the Portal folder.
+   Or launch with:
+   -insecure -fullscreen -novid +mat_queue_mode 0 +mat_vsync 0 +mat_antialias 0
 
-Rexaura (Steam app 317790) is also supported. Install Rexaura from Steam
-before running Install.cmd; the installer then adds a "rexaura_vr" mod
-folder to Portal. Run Launch Rexaura VR.cmd from the Portal game folder. It
-plays Rexaura's chambers on Portal's own engine, which this runtime is built
-for, so Portal must be installed too. Rexaura's own folder is not changed;
-VR saves are kept in Portal\\rexaura_vr. For a custom Rexaura location:
-   .\\Install.ps1 -RexauraDirectory "D:\\SteamLibrary\\steamapps\\common\\Rexaura"
-On Linux with Proton, Steam's launch options cannot replace Portal's own
-"-game portal"; use rexaura-vr-launch.sh as described in the project README.
+To uninstall, close Portal and run Uninstall.cmd. It deletes bin/d3d9.dll
+and the other files this mod installed, so Portal uses system Direct3D 9
+again. bin/VR/InstallBackups is left in place. A d3d9.dll proxy from
+something else, installed at that same path, is removed too.
 
-Portal with RTX and Portal: Prelude RTX are not supported: see the project
-README.
+The installer copies d3d9.dll, openvr_api.dll, bindings, and the gun and
+arm material overrides. Hands, gun, body, and the radio song are Portal's. An older
+replacement pack (portal/custom/bowman_portal1.vpk) is moved to
+bin/VR/InstallBackups. Existing config.txt values are kept.
 
-The installer copies the x86 runtime, OpenVR DLL, controller bindings and
-gun/arm materials. The portal gun, hands, player body and radio song are
-Portal's originals; replacement packs from earlier releases are moved to
-bin/VR/InstallBackups. Existing config values and comments are retained;
-missing settings receive shipped defaults.
-Back up an existing runtime before replacement.
+Game build this was made against:
+  client.dll  0x68362d89  (2025-05-27)
+  engine.dll  0x675781e6  (2024-12-09)
+  server.dll  0x67578384  (2024-12-09)
+A newer Portal can still boot. A missed signature is logged and that
+feature stays off. The portal-environment camera trace checks the client
+timestamp and disables itself on any other build. Verify game files after
+a Steam update.
 
-Only the portal gun is drawn in the gun hand. ShowArms=true also draws
-Portal's stock arms and enables the left-hand support below; it replaces the
-earlier ShowHands setting, which is no longer read.
+Tested with a Quest 3 through SteamVR, on the Windows Portal build
+under Proton, with -insecure. Other headsets and controllers were not
+tested; rebind them in SteamVR.
 
-Left-hand support is optional and seats the palm under the gun barrel;
-release grip to resume independent tracking. Looking away no longer expires
-the support socket while the same gun remains equipped.
+Confirmed in a headset: stereo, head tracking, movement, portal gun,
+pickup and carry, roomscale walking, the ending lift, and the credits.
+Not confirmed in a headset: map cameras in testchmb_a_00 and escape_02.
 
-Held objects now follow the corrected carry direction from the visible wrist.
-Prop selection uses the barrel centerline separately from the wrist carry pose;
-native reach, visibility and contact-pickup checks remain enabled.
-Portal shots and the aim marker use the compiled barrel centerline and the
-current controller pose. A live orange-shot test found the effect transfer
-rounded the launch direction by up to 1.81 degrees. The client now restores
-the exact shot-time launch frame for matching local shots of either color.
-The gun render pass uses the current eye camera. The travelling PortalBlast
-shot effect now starts and points along the actual muzzle; its native target,
-timing and portal color are retained. Native portal placement stays enabled.
-Blue and orange shot alignment were confirmed in headset testing.
-The blue/orange gun light retains its tracked attachment position instead of
-receiving Portal's extra flat-screen FOV projection adjustment.
-During a portal crossing, the complete VR camera and first-person models now
-share Portal's linked-eye transform. Roomscale and stereo offsets stay in the
-correct space. This new crossing correction still needs headset confirmation.
-Wrist roll rotates props without triggering the native downward carry shift.
+On Linux, SteamVR does not reproject missed frames. Under Proton the
+desktop present can stall the headset. RenderWindow=2 (default) mirrors
+the left eye; 0 turns the desktop view off during play. Not tested on
+native Windows.
 
-Choose "VR: use left-handed controls" or "VR: use right-handed controls" in
-Portal's main/pause menu. The choice is saved. Left-handed mode mirrors gun,
-buttons and sticks; manual recenter is on the movement-stick click (right stick
-in left-handed mode), or use "VR: recenter headset" in the menu. Saved custom
-SteamVR bindings may need the new left-handed action set configured.
+Portal with RTX and Portal: Prelude RTX are not supported. They replace
+d3d9.dll with RTX Remix.
 
-AimMode=2 draws a dot where the portal gun points. Portal shots, pickups,
-the support grip and menu clicks give controller haptics. Roomscale=true
-walks the player body after you when you move around your room, so walls,
-buttons and portals follow you, and walking off an edge falls; it waits while
-the stick is in use. Set Roomscale=false to turn it off.
+Left stick moves, right stick turns, left-stick click recenters. Gun-hand
+trigger fires blue, grip fires orange. Pause menu: "VR: use left-handed
+controls" / "VR: use right-handed controls". ShowArms=false draws only
+the gun. Settings: bin/VR/config.txt. Log: portalvr.log.
 
-Portal's own menu and loading screens are shown on a flat screen placed in
-front of you (MenuScreenDistance, MenuScreenWidth, in meters). A lower
-desktop resolution in Portal's video options makes the menu text larger.
-The main-menu scene stands you on an indoor floor near its camera. Each eye
-is drawn through a portal exactly when that eye has passed the opening, head
-tilt no longer moves the view, and an IRL crouch keeps the hands with the
-camera. These are new and still need headset tests.
-
-AutoCalibration=true preserves position, height and heading after explicit
-SteamVR tracking-origin changes, including slow accumulated changes. It uses
-stable tracking samples and checks for a blocked player-body route with a clear
-route at the visible headset before gently correcting horizontal alignment.
-It pauses during unreliable tracking, crouching, aiming, carrying and portals.
-AutoCalibration=false disables automatic recovery. Use manual recenter for
-an incorrect initial setup.
-
-This is a prerelease: attachment and regression checks passed against
-Portal's stock gun model. The stock gun and hands, pickup accuracy,
-left-handed controller use and calibration need headset tests. Wrist-twist
-carry stability was confirmed in an earlier headset test.
-
-Source and project credits: https://github.com/BowmanFox/portal1vr
-Dependency licenses are included under thirdparty and dxvk.
-'''
+Licenses in this zip: L4D2VR/sdk/LICENSE.txt (Source 1 SDK; free
+distribution only), L4D2VR/sdk/thirdpartylegalnotices.txt,
+thirdparty/openvr/LICENSE, thirdparty/minhook/LICENSE.txt, dxvk/LICENSE.
+'''.encode()
 files['SHA256SUMS.txt']=''.join(f'{hashlib.sha256(v).hexdigest()}  {k}\n' for k,v in sorted(files.items())).encode()
 with zipfile.ZipFile(args.output,'w',zipfile.ZIP_DEFLATED,6) as z:
     for name,data in sorted(files.items()):z.writestr(name,data)

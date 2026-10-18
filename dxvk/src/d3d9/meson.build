@@ -16,7 +16,15 @@ openvr_lib = cpp.find_library('openvr_api', dirs : join_paths(portal_root, 'thir
 lib_psapi = cpp.find_library('psapi')
 lib_user32 = cpp.find_library('user32')
 
-d3d9_res = wrc_generator.process('version.rc')
+# Stamp the mod repo's git describe into the DLL version resource.
+# dxvk/ is a subtree, so describe the parent checkout, not this directory.
+portal1vr_version_rc = vcs_tag(
+  command: ['git', '-C', portal_root, 'describe', '--tags', '--always', '--dirty'],
+  input: 'version.rc.in',
+  output: 'portal1vr_version.rc',
+  fallback: 'Portal1VR',
+)
+d3d9_res = wrc_generator.process(portal1vr_version_rc)
 
 # OpenVR matrix methods return HmdMatrix34_t by value using MSVC thiscall.
 # The MinGW Clang ABI puts that return slot in ECX, which crashes the first

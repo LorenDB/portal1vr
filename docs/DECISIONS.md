@@ -1,11 +1,5 @@
 # Decisions (append-only)
 
-### D-001: Run Rexaura on Portal's engine, not Rexaura's own
-Date: 2026-10-06. Scope: multi-game support.
-Chose: a `rexaura_vr` mod folder in Portal's install, whose `gameinfo.txt` mirrors Rexaura's own search order. The VR menu and materials are searched first, then Rexaura's content (`../Rexaura/rexaura`, or an absolute path from the installer). It is launched with `-game rexaura_vr`.
-Rejected: forcing Proton on Rexaura and hooking its Windows build. That build is a 2014 Portal base (its Linux engine is from Sep 2013), so the build-pinned hooks would all fail their guards and the signatures would need re-deriving. Also rejected: editing Rexaura's install, which Steam verification reverts and which would also change flat Rexaura.
-Cost: Portal must be installed. Rexaura runs on Portal's 2024 content packs: the only differences are Valve's Steam Deck UI files, bonus-map images and HUD layout, and `particles/fire_01.pcf` now comes from `hl2_misc`. Portal achievements may unlock (Q-002).
-
 ### D-002: Portal with RTX and Portal: Prelude RTX are not supported
 Date: 2026-10-06.
 Evidence:
@@ -28,5 +22,5 @@ Chose: while `IVRenderView::GetViewEntity()` is not the local player (and no men
 - Keep head pitch and roll free, and translation 1:1.
 Rejected:
 - Following the camera's yaw continuously: that is forced rotation.
-- Showing cutscenes on the flat menu screen: a candidate if moving cameras (Rexaura's door-mounted ones) prove uncomfortable.
+- Showing cutscenes on the flat menu screen: a candidate if a moving camera proves uncomfortable.
 Guard: slot 27 must be `A1 imm32 C3`; otherwise detection is off and behaviour is unchanged.

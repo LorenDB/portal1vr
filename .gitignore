@@ -395,6 +395,8 @@ FodyWeavers.xsd
 
 /Release
 /Debug
+/build-mingw/
+/Portal1VR-Windows-x86.zip
 /L4D2VR/Debug
 /L4D2VR/Release
 /tests/bin/

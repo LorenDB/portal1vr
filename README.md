@@ -1,156 +1,69 @@
-<p align="center">
-  <img src="imgs/logo.png" alt="Portal logo" width="480">
-</p>
-
 # Portal 1 VR
 
 VR mod for the Windows x86 Steam version of Portal, based on [Portal2VR](https://github.com/Gistix/portal2vr) and [L4D2VR](https://github.com/sd805/l4d2vr).
 
-## Screenshots
+Downloads: [LorenDB/portal1vr releases](https://github.com/LorenDB/portal1vr/releases).
 
-Captured while playing Portal 1 VR fullscreen with a Pico headset through SteamVR. These are actual headset views from the playtest, using Portal's stock hand and gun models; the arms they show are now drawn only with `ShowArms=true`. Click either picture for the full-size image.
+The shipped `d3d9.dll` is a modified DXVK (the `msaa` branch of [fholger/dxvk_l4d2vr](https://github.com/fholger/dxvk_l4d2vr), plus the Portal changes in this repo). It is not an upstream DXVK build. The DLL's version resource says Portal1VR.
 
-| Portal gun in the test chamber | Both hands in the elevator |
-| --- | --- |
-| [![Portal 1 VR playtest with the controller-held portal gun and an orange portal across the test chamber](imgs/screenshots/portal1vr-playtest-1.png)](imgs/screenshots/portal1vr-playtest-1.png) | [![Portal 1 VR playtest showing the separate left hand and the right hand holding the portal gun inside an elevator](imgs/screenshots/portal1vr-playtest-2.png)](imgs/screenshots/portal1vr-playtest-2.png) |
+## Install
 
-## Installation
+On Linux, install with [Kaon](https://github.com/LorenDB/kaon).
 
-Download the compiled Windows x86 ZIP from [Releases](https://github.com/BowmanFox/portal1vr/releases). Close Portal, extract the entire ZIP to a folder, and run `Install.cmd`. For a custom game location, run `Install.ps1 -PortalDirectory 'D:\SteamLibrary\steamapps\common\Portal'`. The installer copies the runtime, OpenVR DLL, bindings, and the gun and arm materials. The hands, portal gun, player body, and radio song are Portal's originals; replacement packs from earlier releases are moved to `bin/VR/InstallBackups`. Connect the headset through its PC VR software and start SteamVR first.
+On Windows, close Portal, extract the Windows x86 zip, and run `Install.cmd`. For a custom location:
 
-Run `Launch Portal VR.cmd` for fullscreen using Portal's configured resolution, or launch Portal with:
+```powershell
+.\Install.ps1 -PortalDirectory 'D:\SteamLibrary\steamapps\common\Portal'
+```
+
+The installer copies the runtime, `openvr_api.dll`, controller bindings, and the gun and arm material overrides. The hands, portal gun, player body, and radio song stay Portal's. An older release's `portal/custom/bowman_portal1.vpk` is moved to `bin/VR/InstallBackups`.
+
+Start SteamVR, then run `Launch Portal VR.cmd` in the Portal folder, or launch Portal with:
 
 ```text
 -insecure -fullscreen -novid +mat_queue_mode 0 +mat_vsync 0 +mat_antialias 0
 ```
 
-Choose your preferred display resolution in Portal's video options, then load a chapter. The left stick moves, the right stick turns, and clicking the left stick recenters the headset. The gun-hand trigger fires the blue portal, the gun-hand grip fires the orange portal, the gun-hand face buttons jump (`Jump`) and interact (`Use`), and the off-hand grip ducks (`Crouch`); dropping your head IRL also ducks via `PhysicalCrouch=true` (`PhysicalCrouchDrop=0.25` meters, `false` for button-only). Only the portal gun is drawn in the gun hand. `ShowArms=true` also draws Portal's stock arm models (bare hands, and the forearm inside the gun) and enables the off-hand gun support; without it the off-hand grip is a plain crouch button. `ShowArms` replaces the earlier `ShowHands`, which drew the arms by default and is no longer read. `PhysicalCrouch` and `ShowArms` are optional settings, so older configs load without warnings and the installer appends the defaults. IRL crouching keeps `IN_DUCK` pressed so the server hull shrinks, but the rendered camera adds the engine's duck eye-dip back for physical-only ducks — the view follows your head 1:1 with no double dip, while the crouch button alone keeps the classic view dip. All gameplay inputs are SteamVR Input actions (`Jump`, `Crouch`, `Use`, `PrimaryAttack`, `SecondaryAttack`, `Walk`, `Turn`, `ResetPosition`), so they can be rebound per controller through SteamVR's Controller Binding UI. Default bindings ship in `bin/VR/SteamVRActionManifest`; SteamVR's Pico-to-Oculus compatibility mapping was used during testing. Use **VR: use left-handed controls** or **VR: use right-handed controls** in the main/pause menu to switch and save the gun hand. Left-handed mode mirrors the gameplay buttons and sticks; click the movement stick (right stick in left-handed mode) to recenter, or choose **VR: recenter headset**. Configuration is loaded from `bin/VR/config.txt` at startup.
+Settings live in `bin/VR/config.txt`. The installer keeps values you already set and appends any new keys.
 
-`RenderWindow` sets what the desktop window shows. `2` (the default) mirrors the left eye during play: the GPU copies the part of the eye the headset shows, cropped to the window, so the scene is not rendered a third time. Menus and the end credits still get the full desktop view, which also backs the pause-menu flat screen. `1` renders the full desktop view every frame, at the cost of a third scene render. `0` turns the desktop view off. Every 10 seconds of play, `portalvr.log` records a `Frame time` line breaking each frame into engine, per-eye, desktop, present, GPU-wait and SteamVR phases.
+To uninstall, close Portal and run `Uninstall.cmd`. It deletes `bin/d3d9.dll` and the other files this mod installed, so Portal uses the system Direct3D 9 again. `bin/VR/InstallBackups` is left in place. Another `d3d9.dll` proxy at that path is removed too.
 
-The installer appends missing settings from the shipped config while preserving existing values and comments. This includes `LeftHandGunGrip=true`, `LeftHandGunGripRadius=6`, and `FirstPersonBodyBackOffset=8` on older installations. `tests/install-config.ps1` verifies that the shipped defaults cover every active runtime setting and that upgrades preserve custom values.
+## Game version
 
-## Other games
+Hooks are checked against this Steam Windows build:
 
-| Game | Status |
-| --- | --- |
-| Portal (Steam, Windows build) | Supported |
-| [Rexaura](https://store.steampowered.com/app/317790/Rexaura/) | Supported: runs on Portal's engine, so Portal must be installed too |
-| Portal with RTX | Not supported |
-| Portal: Prelude RTX | Not supported |
+| DLL | PE timestamp | Date |
+| --- | --- | --- |
+| `client.dll` | `0x68362d89` | 2025-05-27 |
+| `engine.dll` | `0x675781e6` | 2024-12-09 |
+| `server.dll` | `0x67578384` | 2024-12-09 |
 
-**Rexaura** is a 20-chamber Portal mod about redirecting energy pellets with the portal gun. Its Steam install ships its own copy of Portal's engine from 2014, which differs from the Portal build this runtime hooks. The installer therefore adds a `rexaura_vr` mod folder to Portal instead. It plays Rexaura's maps and content on Portal's current engine and game DLLs, with the VR menu entries and gun materials, and leaves Rexaura's own folder untouched. With Rexaura installed from Steam, run `Install.cmd` as usual; for a custom location, pass `-RexauraDirectory 'D:\SteamLibrary\steamapps\common\Rexaura'`. Start SteamVR, then run `Launch Rexaura VR.cmd` in the Portal folder. Adding `-game rexaura_vr` to Portal's Steam launch options does not work: Steam starts Portal as `hl2.exe -game portal -steam`, and Source uses the first `-game`. VR saves and settings go to `Portal\rexaura_vr`, separate from Rexaura's own.
+A newer Portal can still start. A missed signature is logged, shown once in a dialog, and that feature stays off. The portal-environment camera trace also checks the `client.dll` timestamp and disables itself on any other build. Verify the game files after a Steam update.
 
-`rexaura_vr\gameinfo.txt` copies Rexaura's own search order, with the VR content searched first. It reaches Rexaura's folder as `../Rexaura/rexaura` when both games are in the same Steam library, and by absolute path otherwise. To install by hand, for example on Linux with Proton, copy `L4D2VR/rexaura_vr` to `Portal/rexaura_vr` (and edit the two `../Rexaura/rexaura` lines if Rexaura is in another library), then set Portal's Steam launch options to `/path/to/rexaura-vr-launch.sh %command% -insecure -fullscreen -novid +mat_queue_mode 0 +mat_vsync 0 +mat_antialias 0`. The script swaps Steam's `-game portal` for `-game rexaura_vr` and runs the command otherwise unchanged; remove it from the launch options to play Portal again. Rexaura's maps report three of Portal's achievement events (portal gun, companion cube, ending); depending on which Steam app the engine reports for this mod, these may unlock the matching Portal achievements. `python3 tests/rexaura-gameinfo.py <Portal folder> <Rexaura folder>` resolves the mod folder against real installs without starting the game: Portal's supported DLLs are loaded, the VR menu and materials win, every Rexaura file and particle system resolves, and nothing from Rexaura's bundled Portal content is missing.
+## Controls
 
-**Portal with RTX and Portal: Prelude RTX** cannot be supported by this runtime. Both render through NVIDIA's RTX Remix, which replaces `d3d9.dll`, the file this runtime is. Remix path-traces only one camera per frame, into the game window, and rasterizes other render targets without ray tracing, so separate eye views would lose RTX entirely. Stereo would need a fork of the Remix renderer that path-traces both eyes with separate denoiser history and submits them from its 64-bit process. That renderer builds only with MSVC on Windows, and Portal with RTX runs at about 26 fps at native 4K on an RTX 4090, roughly a stereo headset's pixel count. Its game DLLs are also NVIDIA's own builds: three of this runtime's signature hooks and all of its build-pinned hooks would have to be found again. Without RTX, Portal with RTX is Portal's campaign, which this runtime already plays.
+Left stick moves, right stick turns, left-stick click recenters. Gun-hand trigger fires the blue portal, gun-hand grip fires orange. Gun-hand face buttons are jump and use. Off-hand grip ducks, and dropping your head ducks too (`PhysicalCrouch`, default on).
 
-## Runtime fixes
+Actions are SteamVR Input bindings in `bin/VR/SteamVRActionManifest`, so they can be rebound per controller. The pause menu entries **VR: use left-handed controls** and **VR: use right-handed controls** swap the gun hand and save the choice.
 
-- Show Portal's own menu on a flat screen in front of you, as the mod originally did, but near enough to read: one meter away and 1.6 meters wide instead of three meters away and 1.5 wide. It is placed in front of the head when it appears and then stays where it is; recentering or pausing again places it afresh. `MenuScreenDistance` and `MenuScreenWidth` (meters) tune it. The menu's text is drawn at a fixed pixel size, about one percent of the screen's height at 4K, so a lower desktop resolution in Portal's video options makes it considerably larger. Laser-pointer and menu-button input are unchanged; the laser now also works when SteamVR reports no controller roles, using the bound hand poses.
-- Stand the player inside the main-menu scene. The engine drives a scripted camera through the background map on a path that leaves the room. The view is anchored instead to an indoor floor with headroom: straight below that camera, else the nearest one on a widening ring around it (up to 512 units), else `MenuSpawnX/Y/Z` when set. Roomscale offsets and head collision are solved from that anchor like gameplay, and recentering finds it again. A camera that is already at about head height over a floor (32 to 96 units) is left exactly where the map put it: Portal's first menu scene hangs its camera 221 units up and is moved, the second one (after the ending) has it 77 units over the floor and is not. Pausing a game keeps the player's own eye, so the view does not move when the menu opens.
-- Show frames without a rendered world (loading screens, startup) only on that screen, against a black compositor background. They were previously also submitted to both eyes, which stretched the flat image across the whole view and locked it to the face. A single skipped frame no longer flashes the screen up.
-- Decide for each eye whether it is through a portal. The engine only asks whether its own eye has passed the plane; a VR head leads or trails the body, so the camera could sit inside the wall on either side of a crossing. Each eye is now drawn through the portal exactly when that eye has passed the opening, and the hands and gun follow the same decision. The opening is read from both portals' placements and used only when they reproduce the engine's own portal matrix. While an eye is on the other side from the engine's own eye, the player's body and carried gun are not drawn for it: Portal's rule for leaving them out assumes its own eye, and the model otherwise filled the view at a crossing. The roomscale follow also brings the body after a head that is through a portal at once, without its usual dead zone.
-- Keep head roll out of the angles given to the engine. Portal lowers the eye toward the feet in proportion to view roll (about a quarter unit per degree) and steers rolled view angles back upright, so tilting the head sank the whole view. The eye images keep the full head orientation.
-- Take the duck dip for an IRL crouch from the eye's height above the feet instead of a slowly tracked standing height, which lagged on stairs and lifts. The same amount now raises the hands with the camera, and is part of the head-collision sweep, so a crawlspace holds the view down instead of letting it rise into the roof. It stays in effect after standing up until the engine's eye has risen again; ending it with the head made the view drop and ride back up.
-- Draw only the portal gun in the gun hand. The stock viewmodel is three meshes: the arm on bones 6-23, the gun and its glass on bones 24 and up. Collapsing the arm's bones to a point removes it without touching the gun, which keeps its animations. The rear shell is open underneath, where the arm went in, so its material is overridden to draw two-sided and the opening shows the shell's inside. Portal's world gun model is closed all round but static and coarser, and is not used.
-- Send the attack, jump, duck and reload console commands only when they change, instead of all of them every frame.
-- Draw an aim dot where the gun hand points (`AimMode=2`), as a small SteamVR overlay at the traced hit point. The laser inherited from Portal 2 never drew: its three client signatures do not exist in Portal 1. The dot follows the ray that portal shots and pickups use, including before the gun is found, and appears while a surface is in range; `AimMode=0` turns it off.
-- Fire the controller haptics that the bindings already declared: a pulse in the gun hand for each portal shot and for picking up or releasing an object, a tick in the off hand when it seats on the gun, and a tick for menu clicks. Saved custom bindings need the two vibration outputs bound to feel them.
-- Walk the player body after the headset (`Roomscale=true`). The camera already followed the head through the room, but collision, buttons, triggers, and portals stayed where the stick had left the body. The body now follows once the head is about 16 cm away from it, and the distance it covers is taken out of the head offset so the view does not move twice. It follows wherever the head goes, off an edge included, so walking off a platform IRL falls. It waits while the movement stick is in use, gives up against a wall until you move, and stays out of fast falls and flings. `Roomscale=false` restores the old behavior. `portalvr.log` records each change in what the follow is doing (following, idle, waiting for the stick, blocked, airborne).
-- Follow map cameras (`point_viewcontrol`): Rexaura's intro and ending, and Portal's `testchmb_a_00` and `escape_02`. While the engine's view entity is not the player, the head stays free at that camera, roomscale body-follow and auto-calibration pause (the camera is not the player's eye), and the aim dot is hidden. At each cut the shot is turned once about the camera, around the vertical only, so it starts in front of your gaze; an animated camera's later turns are not followed. `MapCameraAlign=false` keeps your own heading. The view entity is read through the engine's `GetViewEntity` only when that function has the expected shape, so another engine build turns this off instead of calling an unknown function; `portalvr.log` records `Map camera detection available` and each camera change. This has not been tested in a headset yet.
-- Report configuration and startup problems without stopping the game. An unreadable value in `config.txt` falls back to its default instead of ending the session, all config problems arrive in one message, and error dialogs no longer block the render thread or repeat.
-- Keep the blue/orange gun light at its tracked attachment position after Portal's flat-screen glow calculation. Native color, size, material, and world-model effects are retained.
-- Preserve the complete camera transform when Portal renders the eye through a linked portal during a crossing. Roomscale and stereo offsets are applied in player space, then the camera, first-person models, and attachments are transformed together. The new crossing correction needs headset confirmation.
-- Start VR on the render thread after the engine and D3D device are ready. SteamVR initialization failures can retry without crashing normal rendering.
-- Use Portal's x86 engine interfaces and camera structure instead of Portal 2's incompatible layouts.
-- Resolve client objects through checked RTTI and validate optional hook signatures.
-- Preserve the desktop camera, render each eye separately, and update the engine's view angles from the headset.
-- Preserve the monitor resolution during D3D device resets. Eye textures have their own resolution; applying that resolution to the fullscreen desktop could freeze rendering after a focus change.
-- Sweep a camera hull from the player's eye position to the room-scale headset position. Solid walls, doors, glass, and props stop the view before either eye or its near plane crosses the surface. Both hands receive the same correction, and leaning back restores the normal tracking position without moving the tracking origin.
-- Match Portal 1's collision-ray layout, with the ray/swept flags at bytes 64/65. The extra Portal 2 field made the engine treat moving traces as stationary, allowing the headset through walls.
-- Refresh the submitted eye surfaces when Portal reallocates render targets on map load. The old surfaces produced a black headset image even though SteamVR accepted them.
-- Retain the named eye targets across save loads so VR does not reopen material-system allocation during restoration; continue refreshing their underlying surfaces on binding.
-- Use Portal 1's one-argument player-portal callback to turn tracking and both hands immediately, including crossings with little positional displacement. Rebuild server pickup poses relative to the current player eye pose so an entry-side sample follows a server teleport. Limit eye overrides to use/pickup callbacks so ordinary portal physics sees the player's head.
-- Install the action manifest and controller bindings correctly. Guard missing controller poses and use the correct input and cursor interfaces.
-- Hook Portal 1's eight-argument, float-returning `TraceFirePortal` so placement follows the controller instead of head aim.
-- Use the compiled gun's muzzle centerline for portal shots and the aim marker at every range. Start the ray at wrist depth to retain near-wall checks, and calculate the aim marker after updating the current controller pose.
-- Attach the portal gun at its wrist bone, with the barrel aligned to the shot direction. Transform copies of the bone matrices so eye renders do not compound the pose.
-- Render bare arms with independently tracked left/right bone chains, and create the player's second viewmodel to retain the left arm while holding the gun.
-- Disable world-player bone merging and reconstruct bare arms from their reference skeleton. The old hands animation displaced the wrists from their forearm attachment points. The gun arm keeps Portal's authored grip with its forearm straightened behind the wrist, preserving the gun mesh and firing direction.
-- Draw the first-person body before the main world view is popped, separately for each eye and the optional desktop view. Match the model eye midpoint to the center camera horizontally while preserving animated foot height. Show this copy only when looking down at least 30 degrees. With `FirstPersonBodyHideUpper=true`, retain the torso and collapse only the head and arms at their neck/shoulder attachments; normal portal/world renderings retain the complete model.
-- Map both bare hands to one controller wrist frame; Valve's mirrored hand bones then place the palms down with the thumbs inward. Finger hinges are derived from the model's joint positions, so differing bone rolls cannot reverse a finger. Valid zero skeletal curl opens a bare hand; missing or inactive skeletal data uses a relaxed fallback. The gun hand keeps Portal's authored grip.
-- The first-person body uses the player model's `eyes` attachment for camera alignment, with the eye-bone midpoint as a fallback.
-- Resolve the server player's entity handle through its current virtual interface. The old unmatched `entindex` signature silently disabled the controller pickup hooks. Use the controller origin and angles during the pickup trace and held-object solver, while keeping the headset camera independent.
-- Override the broken stock arm material path through Portal's custom-content folder, using textures already installed with the game. The gun hand uses a filled skin region because its UV layout does not match this atlas; this avoids black pixels but does not restore its original nail/tattoo detailing.
+`ShowArms=false` draws only the portal gun. `true` also draws Portal's stock arms and lets the off hand grab the gun.
 
-## Validation and limits
+`RenderWindow=2` (default) mirrors the left eye on the desktop. `1` renders the desktop view separately. `0` turns it off during play. Menus and credits still use the flat screen in the headset.
 
-Tested locally against Portal client.dll timestamp `0x68362d89`, with a Pico headset through SteamVR. The tester confirmed a visible room, working head rotation, and left-stick movement. Captured eye render targets contain the scene, and both SteamVR eye submissions return success. This confirms basic VR operation, not a complete campaign playthrough.
+## Not supported
 
-The tester also confirmed controller-directed portal placement and independent arm movement in an early room without the gun, using Portal's stock hand and gun models. The runtime later targeted custom replacement models; it now drives the stock `v_hands.mdl` and `v_portalgun.mdl` again. The stock hand frames, finger curl, gun placement, muzzle ray, and left-hand support socket were checked in offline renders of the stock meshes posed by the runtime's bone transforms, and the regression tests pass against the installed gun model. This combination has not been tested in a headset. Live logs also show controller position and angles reaching the pickup hooks. Hand orientation and grip comfort, pickup through portals, and a complete campaign playthrough still require user validation.
-
-The gun is drawn at its authored size with its grip seated in the palm (8.5 Source units back from the tracked controller along the aim axis, paired with the wrist anchor so aim, pickup, and muzzle effects stay glued to the visible gun). `ViewmodelPosCustomOffsetX/Y/Z` add forward/right/up adjustments in Source units; at the default scale, one unit is about 2.3 cm. Restart Portal after changing configuration.
-
-The loading-screen presentation, menu screen placement, menu-scene anchor search, per-eye portal view, roll-free engine angles, duck compensation, gun-only drawing, aim dot, haptics, and roomscale body-follow were built and regression-tested without a headset: the follow logic against a model of the engine's movement, the aim-dot transform as an exact inverse of the camera transform, the portal opening test against linked portal pairs and the installed client's layout, the gun's mesh split against the installed model. None of them has been seen in a headset yet. Check first that the menu is readable, that leaning or walking through a portal shows the far room without a frame of the wall's inside, that tilting the head does not move the view, that the gun's rear opening looks right from below, and that walking in the room does not make the view drift.
-
-The first-person body is off by default. `FirstPersonBody=true` enables the local body when looking down at least 30 degrees, in both VR eyes and the separate desktop mirror (`RenderWindow=1`). Keep `FirstPersonBodyHideUpper=true` to hide the head and untracked arms while showing the chest, torso, and legs. This affects only the temporary first-person rendering. Set `FirstPersonBodyHideUpper=false` only when testing the unmasked full player model.
-
-`FirstPersonBodyBackOffset=8` moves the first-person body backward from its camera-aligned position by eight Source units (about 19 cm at the default VR scale). It uses horizontal heading, preserving foot height as you look down. Values from 0 to 24 are supported; restart Portal after changing it. The tracked hands, gun, collision, and full model seen through portals keep their existing transforms. The default was chosen for the earlier custom body's forward torso placement and has not been re-checked in a headset with Portal's stock Chell model; adjust it if the torso sits too far forward or back.
-
-The camera-collision update passes the Release x86 build and regression checks and has been installed for Pico testing. Its ray flags were checked against the installed engine.dll and corrected to Portal 1's layout. A live downward hull probe returned a floor hit at fraction `0.015059`. During play, the camera then logged blocked contact and recovery to zero correction, with successful submissions to both eyes. The Pico tester confirmed the wall fix works. Passage through active portals with this update still needs verification.
-
-No replacement models are shipped. Portal's stock `v_portalgun.mdl`, `v_hands.mdl` (with `ShowArms=true`), and Chell model are used for the gun, the tracked hands, the first-person body, portal views, and the death ragdoll. Portal's gun viewmodel was built for the desktop camera: its rear shell is open underneath. The installed material override draws that shell two-sided; how its inside is lit has not been seen in a headset. The installer moves an earlier release's `portal/custom/bowman_portal1.vpk` to `bin/VR/InstallBackups`; manual installers should remove that file.
-
-With `ShowArms=true`, optional left-hand support remains free until a fresh grip squeeze near the underside socket. Release grip or pull away to resume independent tracking. `LeftHandGunGrip=false` disables support; `LeftHandGunGripRadius=6` sets the default engagement distance in Source units. Missing tracking releases support. The supplied controller bindings add support inputs while retaining their existing actions; saved custom layouts may need the support action added manually. Right-hand aiming is unchanged.
-
-## Placement and portal collision
-
-Head collision uses Portal 1's native portal-environment hull trace on the verified client build, so a linked opening is not treated as an ordinary solid wall. Other client builds fall back to the existing wall trace. Startup centering now waits for a valid headset pose, and recentering clears the previous collision correction. With `Roomscale=true` the player capsule follows physical room movement; where it cannot (a wall, or `Roomscale=false`), the headset can still separate from it, and clicking the left stick recenters if a doorway appears blocked. The user confirmed that workaround. The new portal-crossing behavior still needs headset confirmation.
-
-`tests/run.ps1 -PortalClient 'C:\Program Files (x86)\Steam\steamapps\common\Portal\portal\bin\client.dll'` also validates the native trace's installed-binary layout without running game code.
-
-## Radio
-
-Portal's stock radio song is used; the mod ships no radio audio, menu option, or `portal1vr_radio_on/off` commands.
-
-Earlier releases replaced the song. The installer moves their VPK, a leftover loose radio WAV, credit notice, and sound caches to `bin/VR/InstallBackups` so they cannot mask the stock song. Other sounds and the existing VR configuration are preserved. For manual installation, remove `portal/custom/bowman_portal1.vpk` and `portal/custom/bowman_portal1.vpk.sound.cache`, and move any old `portal/custom/portal1vr/sound/ambient/music/looping_radio_mix.wav` and its `sound/sound.cache` outside `portal/custom` before restarting Portal. Run `powershell -NoProfile -File tests/install-stock-content.ps1` to check reversible migration and repeated installation.
-
-## Compiled release
-
-After building Release x86, run `python package-release.py --output Portal1VR-Windows-x86.zip` to package the compiled runtime, OpenVR dependency, config-preserving installer and controller bindings. End users do not need Python, Visual Studio or Blender.
-
-Held objects now use the corrected aim orientation from the visible wrist instead of the raw grip direction, which was 30 degrees higher. Automated checks cover carry height and 900 barrel-ray cases across angles, ranges and axial recoil, with maximum line error below 0.002 Source units. See `docs/avatar-verification/Range_Carry_Verification.json`; that report was produced with the earlier custom gun model and predates the latest headset confirmation of angled aiming and wrist-roll carry stability.
-
-The viewmodel render pass uses the active eye camera at Portal's verified gun-render call site. The native `PortalBlast` travelling effect uses the captured muzzle instead of head-derived launch position and angles, preserving its destination, timing and color. After the user reported an angled orange miss on clear surfaces, paired live logs measured up to 1.81 degrees of launch-direction error introduced when Source transferred the effect to the client. The client now restores the exact captured launch frame for a matching local shot of either color. Matching requires the same color, nearby launch and target positions, and a recent, unconsumed shot; unmatched effects keep the native behavior. Native portal-placement adjustments remain enabled. Headset confirmation of this latest correction is pending.
-
-The optional support hand is seated under the barrel at a built-in socket, because Portal's gun model has no authored one. Cached socket metadata remains valid while the same gun is outside the camera view, avoiding involuntary grip release when drawing pauses; weapon changes and tracking loss still release support. Independent hand tracking resumes on release or pull-away. The socket position was checked in offline renders only and needs headset confirmation.
-
-The carry solver receives zero roll only for its position calculation, preventing wrist twists from triggering Portal's downward view-offset correction; prop orientation still receives the full wrist pose. The user confirmed stable cube holding during wrist twists. See `docs/avatar-verification/Overhead_Calibration_Verification.json` for build and test status.
-
-`AutoCalibration=true` preserves calibration after explicit SteamVR origin/floor/heading changes, including small changes that accumulate slowly. Horizontal recovery requires a still, upright headset, a stationary player, sustained stick input, a blocked route at the player body, and a clear route at the visible head. It eases toward alignment at up to 12 cm/s. Ordinary walls, crouches, head turns, aiming, carrying, portal transitions and unreliable tracking inhibit recovery. Tracking loss or frame gaps reset the movement baseline and require stable tracking before recovery resumes. It does not guess an arbitrary incorrect starting floor or heading. Manual recentering remains available from the menu or movement-stick click; `AutoCalibration=false` disables automatic recovery.
-
-Prop selection uses the barrel centerline separately from the wrist carry pose. Native reach, visibility, usability and contact-pickup checks remain enabled. Pickup accuracy, the new left-handed controls and calibration comfort require headset confirmation.
+Portal with RTX and Portal: Prelude RTX. Both replace `d3d9.dll` with NVIDIA's RTX Remix runtime, which path-traces one camera into the game window. This mod is that `d3d9.dll`.
 
 ## Build
 
-The September 23 portal/pickup and save-load changes pass the Release x86 build and automated pose checks. A live Pico run confirmed both new hooks attach, controller pickup reaches the scoped eye overrides, a portal crossing updates tracking by 90 degrees, and both eyes continue receiving frames afterward. Held-prop behavior during crossing and repeated save-load textures still need gameplay confirmation. Check carrying a cube through both directions, releasing it afterward, and loading a save repeatedly while watching chamber textures.
+`./build.sh` cross-compiles the Release x86 DLL with llvm-mingw and Meson, then packs `Portal1VR-Windows-x86.zip`. It uses `mingw-cross.txt` when that compiler exists, otherwise `i686-w64-mingw32-g++` on `PATH`. Pass a path to write the zip somewhere else.
 
-Install Visual Studio 2022 C++ build tools with the Windows SDK, and Git. Clone this repository, then:
-
-```powershell
-./build.ps1
-./L4D2VR/copy-to-portal.ps1 -SourceDll ./Release/d3d9.dll -PortalDirectory 'C:\Program Files (x86)\Steam\steamapps\common\Portal'
-```
-
-`build.ps1` builds Release x86. If using the Visual Studio solution directly, select x86 and your installed toolset. DXVK lives in `dxvk/` as a git subtree of the `msaa` branch of [fholger/dxvk_l4d2vr](https://github.com/fholger/dxvk_l4d2vr), and the Portal changes to it are committed in this repository.
-
-From an x86 Native Tools Command Prompt, run `powershell -File tests/run.ps1` (`-PortalEngine` with Portal's `bin\engine.dll` adds the map-camera view-entity check) for the map-camera, interface-layout, calling-convention, trace-filter, model-name, wrist-transform, independent-arm, first-person-body, camera-collision, portal-camera, roomscale-follow, aim-marker, and log regression checks. `-PortalGunModel` (with the model's `.vvd` beside it) adds the gun attachment and arm/gun mesh-split checks. The roomscale checks run the follow against a model of the engine's ground movement (walking, crouching, a wall, and stick use). Camera checks cover the swept-hull layout, eye/near-plane clearance, leaning back, solid starts, floor contact, and resetting after an engine teleport.
-
-`portalvr.log` in the Portal directory records startup, state changes, and errors. Add `-portalvr-debug` for the periodic state snapshots and per-shot aim audits, which are otherwise off. For render debugging only, add `-portalvr-debug-textures`. It saves left/right/desktop BMP images at three early frame counts in the Portal directory. Normal launches do not perform these GPU readbacks. Add `-portalvr-debug-collision` to run a downward hull probe against the live engine on the first gameplay frame; `portalvr.log` records its hit fraction and the camera's blocked/recovered state changes.
+`build.ps1` builds the Visual Studio solution. That project does not compile `L4D2VR/msvc_openvr_abi.cpp`, which the MinGW DLL needs for OpenVR. Ship the `build.sh` output.
 
 ## Credits
 
 [Portal2VR](https://github.com/Gistix/portal2vr), [L4D2VR](https://github.com/sd805/l4d2vr), [VirtualFortress2](https://github.com/PinkMilkProductions/VirtualFortress2), [gmcl_openvr](https://github.com/Planimeter/gmcl_openvr), [DXVK](https://github.com/fholger/dxvk_l4d2vr), and [Source SDK 2013](https://github.com/ValveSoftware/source-sdk-2013).
 
-Portal logo: Valve. Screenshots captured during local VR playtesting. [Image sources](imgs/SOURCES.md).
+[BowmanFox](https://github.com/BowmanFox) created the first version of this mod before I took it and ran with it.
+
+Source SDK code is under the Source 1 SDK license (`L4D2VR/sdk/LICENSE.txt`, `L4D2VR/sdk/thirdpartylegalnotices.txt`). Those files, plus the OpenVR, MinHook, and DXVK licenses, are in the release zip. Free distribution only.
