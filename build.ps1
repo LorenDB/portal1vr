@@ -1,6 +1,5 @@
 param([string]$Configuration = 'Release', [string]$PlatformToolset = 'v143')
 $ErrorActionPreference = 'Stop'
-& (Join-Path $PSScriptRoot 'patches\apply-dxvk-patch.ps1')
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Install Visual Studio C++ build tools and a Windows SDK.' }
 $msbuild = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1

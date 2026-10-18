@@ -136,14 +136,14 @@ Prop selection uses the barrel centerline separately from the wrist carry pose. 
 
 The September 23 portal/pickup and save-load changes pass the Release x86 build and automated pose checks. A live Pico run confirmed both new hooks attach, controller pickup reaches the scoped eye overrides, a portal crossing updates tracking by 90 degrees, and both eyes continue receiving frames afterward. Held-prop behavior during crossing and repeated save-load textures still need gameplay confirmation. Check carrying a cube through both directions, releasing it afterward, and loading a save repeatedly while watching chamber textures.
 
-Install Visual Studio 2022 C++ build tools with the Windows SDK, and Git. Clone this repository recursively, then:
+Install Visual Studio 2022 C++ build tools with the Windows SDK, and Git. Clone this repository, then:
 
 ```powershell
 ./build.ps1
 ./L4D2VR/copy-to-portal.ps1 -SourceDll ./Release/d3d9.dll -PortalDirectory 'C:\Program Files (x86)\Steam\steamapps\common\Portal'
 ```
 
-`build.ps1` applies `patches/dxvk-portal-startup.patch` to the pinned DXVK submodule before building Release x86. If using the Visual Studio solution directly, first run `patches/apply-dxvk-patch.ps1` and select x86 and your installed toolset. The patch is stored in the parent repository so the DXVK fixes survive a fresh clone.
+`build.ps1` builds Release x86. If using the Visual Studio solution directly, select x86 and your installed toolset. DXVK lives in `dxvk/` as a git subtree of the `msaa` branch of [fholger/dxvk_l4d2vr](https://github.com/fholger/dxvk_l4d2vr), and the Portal changes to it are committed in this repository.
 
 From an x86 Native Tools Command Prompt, run `powershell -File tests/run.ps1` (`-PortalEngine` with Portal's `bin\engine.dll` adds the map-camera view-entity check) for the map-camera, interface-layout, calling-convention, trace-filter, model-name, wrist-transform, independent-arm, first-person-body, camera-collision, portal-camera, roomscale-follow, aim-marker, and log regression checks. `-PortalGunModel` (with the model's `.vvd` beside it) adds the gun attachment and arm/gun mesh-split checks. The roomscale checks run the follow against a model of the engine's ground movement (walking, crouching, a wall, and stick use). Camera checks cover the swept-hull layout, eye/near-plane clearance, leaning back, solid starts, floor contact, and resetting after an engine teleport.
 
